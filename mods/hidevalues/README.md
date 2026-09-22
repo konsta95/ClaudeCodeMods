@@ -35,7 +35,8 @@ Run it from a clone with
     CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir mods/hidevalues
 
 Hover needs the fullscreen terminal UI with mouse tracking. In the classic scrolling
-UI the values are hidden and stay hidden.
+UI there is no pointer, so nothing would be revealed; the hide itself was only
+observed in the fullscreen UI.
 
 ## Measured
 
@@ -49,7 +50,8 @@ never `ToolResult`, and a `ToolUse` rewrite replaces the whole row, header inclu
 which is why the hook draws the header too. `ToolResult` stays in the matcher for the
 standalone-row case the declarations describe.
 
-The kit passes 7 of 7: the entropy and span policy, the `ToolUse` and `ToolResult`
+The kit passes 7 of 7: the entropy and span policy (including the `min_length` floor,
+which the first packaged build hardcoded at 20), the `ToolUse` and `ToolResult`
 drawings, the rows that pass through, stderr drawn dim, the option wiring, and a
 control that a hidden text with no scope is refused.
 

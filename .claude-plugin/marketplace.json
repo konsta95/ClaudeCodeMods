@@ -16,7 +16,7 @@
     {
       "name": "mod-settings",
       "source": "./mods/mod-settings",
-      "description": "A /mods pane that lists every mod's declared settings, drafts edits and applies them, with presets and undo."
+      "description": "A /mods pane that lists the mods' visible settings, drafts edits and applies them, with presets, undo and observed hook previews."
     }
   ]
 }

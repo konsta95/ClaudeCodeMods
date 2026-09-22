@@ -36,7 +36,7 @@ const USAGE = {
 }
 
 const REPO = { root: '/work/demo', remote: 'git@github.com:konsta95/demo.git', internal: false, name: 'demo' }
-const SESSION_ID = '7259f047-2a8e-49fb-b3b8-dd7abdc2d11c'
+const SESSION_ID = '4e1f0c9a-7b2d-4c58-9a36-d1e8f5b2c703'
 
 // The kit refuses a second on("<event>") for the same event, so a test that wants a
 // different answer passes it as an override instead of registering twice.

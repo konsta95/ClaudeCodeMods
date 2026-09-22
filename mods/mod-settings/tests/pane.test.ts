@@ -276,7 +276,7 @@ test('a fresh session clears stale admission and draft state without listing row
   let listed = false
   const w = world(on, [TOGGLE], { store: { 'settings.session.v1': 'old-session', 'settings.view.v1': { draft: { [TOGGLE.key]: false }, errors: {}, focused: '', notice: '', explanation: '' } } })
   on('config.*', async ($, e, next) => { if (next.is('config.list', e)) listed = true; return next(e) })
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/anvil' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work/demo' })
   expect(listed).toBe(false)
   expect(w.persisted.get('settings.admissions.v1')).toEqual([])
   expect((w.persisted.get('settings.view.v1') as { draft: unknown }).draft).toEqual({})

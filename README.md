@@ -7,9 +7,9 @@ listing all of them.
 
 | Mod | What it does | Verified |
 | --- | --- | --- |
-| [`statusline`](mods/statusline) | The [ClaudeCodeStatusline](https://github.com/konsta95/ClaudeCodeStatusline) bar as a function hook: drawn in the band above the prompt from the session's own nouns, each segment revealing its details on hover. | kit 11 of 11, strict typecheck clean, bar and hover observed live |
+| [`statusline`](mods/statusline) | The [ClaudeCodeStatusline](https://github.com/konsta95/ClaudeCodeStatusline) bar as a function hook: drawn in the band above the prompt from the session's own nouns, each segment revealing its details on hover. | kit 11 of 11, strict typecheck clean, bar observed live on this build and hover on the build before it |
 | [`hidevalues`](mods/hidevalues) | Hides high-entropy tokens and e-mail addresses in Bash tool rows until the pointer is over them. | kit 7 of 7, strict typecheck clean, hide and reveal observed live |
-| [`mod-settings`](mods/mod-settings) | `/mods`: a pane listing every mod's declared settings, with drafts, presets, reset and undo. | kit 35 of 35, strict typecheck clean, Apply and Undo observed live once; open limits in its README |
+| [`mod-settings`](mods/mod-settings) | `/mods`: a pane listing the mods' visible settings, with drafts, presets, reset and undo. | kit 35 of 35, strict typecheck clean, Apply and Undo observed live in two probe sessions; open limits in its README |
 
 ## Requirements
 
@@ -19,8 +19,10 @@ listing all of them.
 - Function hooks enabled: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the environment of
   the `claude` process. Without it no hooks module is loaded.
 - Hover needs the fullscreen terminal UI (`"tui": "fullscreen"` in `settings.json`)
-  with mouse tracking; under tmux the server needs `mouse on`. Everything else works
-  in the classic scrolling UI.
+  with mouse tracking; under tmux the pane needs `mouse on` (read from
+  `tmux show -g mouse`; the hover probes themselves ran outside tmux). The
+  declarations put the band and the tool rows on every terminal surface, fullscreen
+  or not, but no session in the classic scrolling UI was run.
 
 ## Running a mod
 

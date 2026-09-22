@@ -2,8 +2,10 @@
 
 [ClaudeCodeStatusline](https://github.com/konsta95/ClaudeCodeStatusline) as a
 function-hook mod. The shell version is a `statusLine` command that Claude Code spawns
-after every response, feeding it a JSON payload on stdin and printing the line it
-returns under the prompt. This version runs inside the process: a `ui.render` hook on
+on every status-line update (a new assistant message is one trigger among session
+start, `/compact`, permission-mode and vim-mode changes and timers, debounced at
+300 ms), feeding it a JSON payload on stdin and printing the line it returns under the
+prompt. This version runs inside the process: a `ui.render` hook on
 the `AbovePrompt` band builds the same segments from the session's own nouns
 (`$.session.cwd()`, `repo()`, `model()`, `usage()`, `id()`), so there is no process to
 spawn and no payload to parse, and each segment reveals its details when the pointer
@@ -47,8 +49,9 @@ remove that entry to keep one.
 
 ## Measured
 
-Single observations on Claude Code 2.1.278, 2026-09-21 and 2026-09-22, a Haiku 4.5
-session with the shell status line off.
+Claude Code 2.1.278. The mod rows are single observations from one Haiku 4.5 session
+on 2026-09-22 with the shell status line off; the shell row is three runs of 30 spawns
+of the classic command with a fixed payload on 2026-09-21.
 
 | What | Value |
 | --- | --- |
@@ -57,13 +60,16 @@ session with the shell status line off.
 | Cold gather of the nouns, once at start | 260.8 ms (from `ui.render`), 124.8 ms (from `session.start`) |
 | Warm gather after a turn | 4.66 ms |
 | Render of the band | 2.64 ms the first time, then 0.25 to 0.44 ms |
-| Shell version, one `statusLine` spawn | 132.4 ms median of 30 (bare `node` spawn 119.4 ms median of 30), paid after every response |
-| Kit, one run from this repository | first mount 76.8 ms, 200 cached renders median 1.6 ms, p90 2.8 ms |
+| Shell version, one `statusLine` spawn | 132.4 ms median of 30, with 122.0 and 137.1 ms in two other runs of 30 (bare `node` spawn 119.4 ms median of 30); paid on every status-line update, asynchronously and off the renderer's path, so not on the same clock as the render row |
+| Kit, one run from this repository | first mount 76.8 ms (60.6 to 84.0 across earlier runs), 200 cached renders median 1.6 ms, p90 2.8 ms, max 13.9 ms |
 
-The hover reveal was observed live in the fullscreen UI on a 40 by 140 pseudo-terminal:
-before the sweep the details row held only its prefix, and sweeping the pointer along
-the bar showed each segment's detail in turn, and nothing over a separator or past the
-bar's end.
+The hover reveal was observed live in the fullscreen UI on a 40 by 140 pseudo-terminal,
+on an earlier build of the module (`ad8b1cf2`; the rows above are from the committed
+build, `ae9bf239`): before the sweep the details row held only its prefix, and sweeping
+the pointer along the bar showed the detail of each of the three segments the bar
+carried before the first response, git branch, model and session, and nothing over a
+separator or past the bar's end. The other four segments were never hovered live; the
+kit checks that each names a scope and has a hidden row.
 
 ## Limits
 
@@ -76,5 +82,6 @@ bar's end.
 - The effort level is unknown until the first `turn.step`. The `/config` rows are
   read once at start in case one carries it; in the measured session none of the 43
   rows did.
-- `PROBE_RUN` and `PROBE_OUT` in the environment make `turn.complete` write a JSON
-  timing dump. They exist for measurement and are otherwise inert.
+- `PROBE_RUN` in the environment makes `turn.complete` write a JSON timing dump, under
+  `out/<PROBE_RUN>` unless `PROBE_OUT` names another directory. Both exist for
+  measurement and are otherwise inert.

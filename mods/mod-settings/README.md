@@ -35,17 +35,17 @@ This mod's `show_descriptions` setting controls author-provided help beneath eac
 
     CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir mods/mod-settings
 
-Run the kit from this directory with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test`. `tests/fixtures/guardmark` is a small provider plugin the pane tests load beside this mod (a hook that refuses a marked command, with two declared options and a preset); `benchmarks/no-trace` is an empty hooks module the trace-cost test uses as its baseline. Neither is meant to be installed.
+Run the kit from this directory with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test`. `tests/fixtures/guardmark` is a small provider plugin the pane tests load beside this mod (a hook that refuses a marked command, with two declared options and two presets); `benchmarks/no-trace` is an empty plugin kept for a baseline arm the kit does not run: its copy of the trace-cost test is parked as `tests/trace-cost.test.ts.txt`, so `claude plugin test` reports two files. Neither is meant to be installed.
 
 ## Authoring status
 
-This mod was written in a Codex round under the owner's session in September 2026 and is published as delivered, with its tests and fixtures. Verified from this repository on 2026-09-22 against Claude Code 2.1.278: `claude plugin test` 35 of 35 across two files, `claude plugin validate` clean, strict `tsc` clean. The kit's trace-cost test measured, per kit dispatch, a median of 0.35 ms (p90 0.40 ms) with the pane closed and 0.81 ms (p90 0.99 ms) with it open, 240 dispatches each, one run.
+This mod was written in a Codex round under the owner's session in September 2026 and is published as delivered, with its tests and fixtures. Verified from this repository on 2026-09-22 against Claude Code 2.1.278: `claude plugin test` 35 of 35 across two files, `claude plugin validate` clean, strict `tsc` clean. The kit's trace-cost test measured, per kit dispatch, a median of 0.28 to 0.35 ms (p90 0.38 to 0.47 ms) with the pane closed and 0.76 to 0.90 ms (p90 0.98 to 1.14 ms) with it open, 240 dispatches each, across five runs on one machine. These are gross figures: the baseline arm that would net out the kit's own cost was not run.
 
-Observed live, once each, on 2.1.278: the pane opened from `/mods`, an Apply of a toggle wrote the value and Undo restored it; with the `statusline` and `hidevalues` mods loaded beside this one, `/mods set statusline.details=false` answered in 0.53 to 0.62 s and the status bar's details row disappeared and came back about 0.5 s later, and the pane listed the other two mods' eight options in three of four runs.
+Observed live on 2.1.278: in two probe sessions the pane opened from `/mods`, an Apply of a toggle wrote the value and Undo restored it; in four runs with the `statusline` and `hidevalues` mods loaded beside this one, `/mods set statusline.details=false` answered in 0.53 to 0.62 s and the status bar's details row disappeared and came back about 0.5 s later, and the pane listed the other two mods' eight options in three of the four.
 
 Open limits:
 
 - The first-seen toast, shown when a provider is observed for the first time, is unreachable in the kit: the `ADMISSION_REACH` line in the kit output records that the inline replay does not include the mod under test. It has not been observed live either.
 - In the run where the pane listed no options, the first load of a fresh configuration, the cause was not isolated.
-- During the first live probe the settings file's checksum changed once across an Apply and Undo pair; the confirming probe restored the toggle with the checksum unchanged. The cause of the first change was not isolated.
+- During the first of the two Apply and Undo probes the settings file's checksum changed across the pair. The keys that changed (`effortLevel`, `autoCompactWindow`, `dialogExpiry`, `timeFormat`, `verbose`, `enableArtifact`, `alwaysThinkingEnabled`) are engine settings this mod does not write, and the writer was not attributed. The second probe restored the toggle with the checksum unchanged.
 - When this mod loads after a provider, that provider's rows are visible but its defaults and presets are not: Reset reports `declared defaults not observed`.

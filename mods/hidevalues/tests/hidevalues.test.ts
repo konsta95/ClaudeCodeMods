@@ -5,6 +5,7 @@ import { entropy, register as registerHidevalues, spans } from '../hooks/hideval
 const TOKEN = 'Zx9Qw3Er7Ty1Ui5Op2As8Df4Gh6Jk0Lz'
 const EMAIL = 'dana@acme.io'
 const PAD = 'AAAAAAAAAAAAAAAAAAAAAAAA'
+const SHORT = 'aB3xQ9zP1mK7vR2sT'
 // The Bash tool's stored stdout carries no trailing newline (measured live, hv2).
 const STDOUT = 'API_KEY="' + TOKEN + '"\nLOG_LEVEL="debug"\nOWNER=' + EMAIL + '\nPAD=' + PAD
 const RID = 'toolu_01HoverValuesProbe0001'
@@ -75,6 +76,14 @@ test('unit: entropy and spans follow the case-study policy', async () => {
     { text: 'OWNER=', hidden: false },
     { text: EMAIL, hidden: true },
   ])
+  // The candidate scan's floor follows min_length: a 17-character run of distinct
+  // characters (entropy 4.09) is hidden at 8 and left alone at 20. Review of the
+  // first packaged build found the floor hardcoded at 20, so this failed there.
+  expect(spans('x: ' + SHORT, 8, 4, true)).toEqual([
+    { text: 'x: ', hidden: false },
+    { text: SHORT, hidden: true },
+  ])
+  expect(spans('x: ' + SHORT, 20, 4, true)).toEqual([{ text: 'x: ' + SHORT, hidden: false }])
 })
 
 test('ToolUse: the token and the e-mail are hidden with a hover scope under a redrawn header; plain lines are not', async ($, on) => {

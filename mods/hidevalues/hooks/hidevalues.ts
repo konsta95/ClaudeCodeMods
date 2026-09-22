@@ -2,8 +2,12 @@ import type { On, PluginOptions, RenderElement } from 'claude-code'
 
 // Detection policy of the case studies: a run of 20 or more token characters whose
 // Shannon entropy is at least 4.0 bits per character (video 08), and anything shaped
-// like an e-mail address (video 09). Both thresholds are plugin policy, not engine facts.
-const CANDIDATE = /[A-Za-z0-9+/_=.-]{20,}/g
+// like an e-mail address (video 09). Both thresholds are plugin policy, not engine facts,
+// and both are options: the candidate scan's floor is min_length, not a fixed 20.
+const TOKEN_CHARS = '[A-Za-z0-9+/_=.-]'
+function candidate(minLen: number): RegExp {
+  return new RegExp(TOKEN_CHARS + '{' + Math.max(1, Math.floor(minLen)) + ',}', 'g')
+}
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g
 
 export function entropy(s: string): number {
@@ -22,7 +26,7 @@ export type Span = { text: string; hidden: boolean }
 /** Splits one line into plain and hidden spans; overlapping hits merge. */
 export function spans(line: string, minLen: number, minEntropy: number, emails: boolean): Span[] {
   const hits: Array<[number, number]> = []
-  for (const m of line.matchAll(CANDIDATE)) {
+  for (const m of line.matchAll(candidate(minLen))) {
     const at = m.index ?? 0
     if (m[0].length >= minLen && entropy(m[0]) >= minEntropy) hits.push([at, at + m[0].length])
   }
