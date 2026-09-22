@@ -1,0 +1,14 @@
+{
+  "name": "mod-settings",
+  "version": "0.2.0",
+  "description": "Draft and apply mod settings, with declared presets, undo and observed hook previews.",
+  "author": { "name": "konsta95" },
+  "userConfig": {
+    "show_descriptions": {
+      "type": "boolean",
+      "title": "Show setting descriptions",
+      "description": "Show each mod author’s help text below its setting.",
+      "default": true
+    }
+  }
+}

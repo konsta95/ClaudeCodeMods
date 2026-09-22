@@ -1,0 +1,4 @@
+{
+  "description": "A Bash tool.call hook switched by the mod's own userConfig toggle, updated live through a config.set hook on that key.",
+  "modules": ["./guard.ts"]
+}

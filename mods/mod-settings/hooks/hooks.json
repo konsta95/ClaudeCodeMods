@@ -1,0 +1,4 @@
+{
+  "description": "Draft and apply settings with presets and observed dispatch previews.",
+  "modules": ["./settings.ts"]
+}

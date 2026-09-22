@@ -1,0 +1,22 @@
+{
+  "name": "ClaudeCodeMods",
+  "owner": { "name": "konsta95" },
+  "description": "Claude Code mods by konsta95: function-hook plugins, starting with the ClaudeCodeStatusline bar as a function hook.",
+  "plugins": [
+    {
+      "name": "statusline",
+      "source": "./mods/statusline",
+      "description": "ClaudeCodeStatusline as a function-hook mod: the status bar drawn in the band above the prompt, each segment revealing its details on hover."
+    },
+    {
+      "name": "hidevalues",
+      "source": "./mods/hidevalues",
+      "description": "Hides high-entropy tokens and e-mail addresses in Bash results until hovered."
+    },
+    {
+      "name": "mod-settings",
+      "source": "./mods/mod-settings",
+      "description": "A /mods pane that lists every mod's declared settings, drafts edits and applies them, with presets and undo."
+    }
+  ]
+}

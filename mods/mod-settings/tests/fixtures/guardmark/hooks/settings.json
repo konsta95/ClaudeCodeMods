@@ -1,0 +1,8 @@
+{
+  "groups": { "Safety": ["hook_block_marker", "strictness"] },
+  "risk": { "hook_block_marker": "caution" },
+  "presets": {
+    "Cautious": { "hook_block_marker": true, "strictness": "block" },
+    "Quiet": { "hook_block_marker": true, "strictness": "warn" }
+  }
+}

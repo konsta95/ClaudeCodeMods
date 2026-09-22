@@ -1,0 +1,13 @@
+{
+  "name": "hidevalues",
+  "version": "0.1.0",
+  "description": "Hides high-entropy tokens and e-mail addresses in Bash results until hovered",
+  "author": { "name": "konsta95" },
+  "userConfig": {
+    "min_length": { "type": "string", "title": "Minimum token length", "default": "20", "description": "A run of token characters shorter than this is never hidden." },
+    "min_entropy": { "type": "string", "title": "Minimum entropy (bits per character)", "default": "4.0", "description": "A token below this Shannon entropy is never hidden; 4.0 is the case study's threshold." },
+    "emails": { "type": "boolean", "title": "Hide e-mail addresses", "default": true, "description": "Also hide anything shaped like an e-mail address." },
+    "hide_color": { "type": "string", "title": "Block colour", "default": "#3a3a3a", "description": "Hidden text is drawn in this colour on this colour." },
+    "reveal_color": { "type": "string", "title": "Reveal colour", "default": "#ffd700", "description": "The text colour while the pointer is over a hidden value." }
+  }
+}

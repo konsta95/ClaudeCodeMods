@@ -1,0 +1,8 @@
+{
+  "groups": { "Display": ["show_descriptions"] },
+  "risk": {},
+  "presets": {
+    "Detailed": { "show_descriptions": true },
+    "Compact": { "show_descriptions": false }
+  }
+}

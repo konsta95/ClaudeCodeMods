@@ -1,0 +1,4 @@
+{
+  "description": "Redraws a Bash result row with its high-entropy tokens and e-mail addresses hidden as grey blocks; hovering one reveals it on the surface, no hook runs.",
+  "modules": ["./hidevalues.ts"]
+}

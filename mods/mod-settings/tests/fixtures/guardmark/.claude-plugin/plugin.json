@@ -1,0 +1,21 @@
+{
+  "name": "guardmark",
+  "version": "0.1.0",
+  "description": "Probe mod with two switchable settings declared through userConfig: a hook toggle and a strictness choice.",
+  "author": { "name": "konsta95" },
+  "userConfig": {
+    "hook_block_marker": {
+      "type": "boolean",
+      "title": "Block the marker command",
+      "default": true,
+      "description": "Refuse any Bash command that starts with the marker. Turn off only for scripts you trust."
+    },
+    "strictness": {
+      "type": "string",
+      "title": "Strictness",
+      "default": "block",
+      "options": ["off", "warn", "block"],
+      "description": "What happens on a match: warn only records it, block denies the call."
+    }
+  }
+}

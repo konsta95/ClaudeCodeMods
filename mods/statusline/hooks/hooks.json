@@ -1,0 +1,4 @@
+{
+  "description": "Draws the status bar in the band above the prompt from the session nouns, reveals each segment's details on hover, and optionally pins a plain status line.",
+  "modules": ["./statusline.ts"]
+}
