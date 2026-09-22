@@ -5,10 +5,11 @@ import type { On } from 'claude-code'
 const HINT = { isDraft: false, isWorking: false, hint: '? for shortcuts' }
 const VIEWPORT = { columns: 140, rows: 40, isFullscreen: true }
 const MOUNT = { plugin: 'statusline', surface: 'terminal' as const, component: 'PromptHint' as const, props: HINT, requestId: 'PromptHint', viewport: VIEWPORT }
-const PANE_ID = 'statusline-mod'
-const PANE = { title: 'Status line', isFocused: true, bodyColumns: 120, placement: 'inline' as const, scroll: { offset: 0, bodyRows: 20 }, view: {} }
-const PANE_MOUNT = { plugin: 'statusline', surface: 'terminal' as const, component: 'Pane' as const, props: PANE, requestId: PANE_ID }
+const BAND_ID = 'above-prompt'
+const BAND = { hasSurvey: false, isWorking: false, maxRows: 29, bodyColumns: 140, scroll: { offset: 0, bodyRows: 29 }, view: {} }
+const BAND_MOUNT = { plugin: 'statusline', surface: 'terminal' as const, component: 'AbovePrompt' as const, props: BAND, requestId: BAND_ID }
 const PREFS = 'statusline.prefs.v1'
+const PICKER = 'statusline.picker.v1'
 const DEFAULTS = ['git-branch', 'model', 'context', 'five-hour-limit', 'weekly-limit', 'session', 'cost']
 
 const USAGE = {
@@ -31,14 +32,18 @@ type Mocks = Record<string, (...args: any[]) => unknown>
 
 // The kit refuses a second on("<event>") for the same event, so a test that wants a
 // different answer passes it as an override instead of registering twice. The world
-// is the nouns the bar reads plus what the command and the pane touch: the store, the
-// /config rows, the pane calls and the command registration.
+// is the nouns the bar reads plus what the command and the picker touch: the store, the
+// /config rows, the focus ring's moves and the command registration. Nothing beneath
+// the plugins answers ui.render or prompt.submit in the kit; the two answers here stand
+// in for the engine's own drawing and for the prompt entering. A ui.render answer is
+// the tree itself, not { value }.
 function world(on: On, over: Mocks = {}, store: Record<string, unknown> = {}) {
   const clock = mock.clock(on)
   const persisted = new Map<string, unknown>(Object.entries(store))
   on('store.*', async ($, e, next) => {
     const result = await next(e)
     if (next.is('store.set', e)) persisted.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    if (next.is('store.delete', e)) persisted.delete(e.key)
     return result
   })
   mock.store(on, store)
@@ -80,6 +85,9 @@ function world(on: On, over: Mocks = {}, store: Record<string, unknown> = {}) {
       toasts.push(e.text)
       return { value: undefined }
     },
+    'ui.focus': () => ({}),
+    'ui.render': (_$: any, e: any) => ({ type: 'Box', props: {}, children: [{ type: 'Text', props: {}, children: ['ENGINE ' + e.component] }] }),
+    'prompt.submit': (_$: any, e: any) => ({ text: e.text, origin: e.origin }),
     ...over,
   }
   for (const [event, fn] of Object.entries(mocks)) on(event as any, fn as any)
@@ -89,6 +97,9 @@ function world(on: On, over: Mocks = {}, store: Record<string, unknown> = {}) {
 const start = ($: Engine) => $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work/demo/src' })
 const command = ($: Engine, args = '', isFullscreen = true) =>
   $.command.run({ command: 'statusline-mod', args, origin: { kind: 'composer' }, presentation: { isFullscreen, columns: 140 } })
+// The person moving the band's focus ring onto an element, as Tab, an arrow or a click does.
+const personFocus = ($: Engine, element: string) =>
+  $.ui.focus({ component: 'AbovePrompt', requestId: BAND_ID, plugin: 'statusline', element, origin: { kind: 'person' } })
 
 type Node = { type?: string; key?: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
 
@@ -178,15 +189,7 @@ test('the stored order is honoured and unknown ids are dropped', async ($, on) =
 })
 
 test('with every segment off the hook passes the hint line through', async ($, on) => {
-  world(
-    on,
-    {
-      // Nothing beneath the plugins answers ui.render in the kit; this stands in for
-      // the engine's own hint line. A ui.render answer is the tree itself, not { value }.
-      'ui.render': (_$: any, e: any) => ({ type: 'Box', props: {}, children: [{ type: 'Text', props: {}, children: ['ENGINE ' + e.component] }] }),
-    },
-    { [PREFS]: { ids: [] } },
-  )
+  world(on, {}, { [PREFS]: { ids: [] } })
 
   const ui = await $.ui.mount(MOUNT)
 
@@ -274,16 +277,21 @@ test('the first gathers of a session share one read of the config rows', async (
   expect(reads).toBe(1)
 })
 
-test('session.start registers /statusline-mod and the bare command opens the dialog pane', async ($, on) => {
+test('session.start registers /statusline-mod and the bare command opens the picker in the band above the prompt', async ($, on) => {
   const w = world(on)
 
   await start($)
   expect(w.registered).toEqual(['statusline-mod'])
+  const before = await $.ui.mount(BAND_MOUNT)
+  expect(await before.find({ key: 'segment:model' })).toBeUndefined()
+  await before.unmount()
 
   const result = await command($)
   expect(result.text).toBeUndefined()
-  expect(w.opened).toHaveLength(1)
-  expect(w.opened[0]).toMatchObject({ id: PANE_ID, focus: true, closeOnEscape: true, holdToasts: true })
+  expect(w.opened).toEqual([])
+  expect(w.persisted.get(PICKER)).toEqual({ session: SESSION_ID })
+  const band = await $.ui.mount(BAND_MOUNT)
+  expect(await band.find({ key: 'segment:model' })).toBeDefined()
 })
 
 test('show answers with the current line; reset restores the defaults; other args give the usage', async ($, on) => {
@@ -293,7 +301,6 @@ test('show answers with the current line; reset restores the defaults; other arg
   const shown = await command($, 'show')
   expect(shown.text).toContain('Status line: cost, model')
   expect(shown.text).toContain('Not shown: git-branch')
-  expect(w.opened).toHaveLength(0)
 
   const reset = await command($, 'reset')
   expect(reset.text).toContain('reset to')
@@ -301,94 +308,275 @@ test('show answers with the current line; reset restores the defaults; other arg
 
   const usage = await command($, 'nonsense')
   expect(usage.text).toContain('Usage: /statusline-mod')
+  expect(w.persisted.has(PICKER)).toBe(false)
 })
 
-test('a non-interactive session gets the summary instead of a pane', async ($, on) => {
+test('a non-interactive session gets the summary instead of the picker', async ($, on) => {
   const w = world(on)
   await $.session.start({ surface: null, isInteractive: false, cwd: '/work/demo/src' })
 
   const result = await command($)
   expect(result.text).toContain('Status line: ' + DEFAULTS.join(', '))
-  expect(w.opened).toHaveLength(0)
+  expect(w.persisted.has(PICKER)).toBe(false)
 })
 
-test('the pane lists the chosen segments first with digit hotkeys, then the rest', async ($, on) => {
+test('the picker lists the chosen segments first under the digits 1 to 0, then the rest, and draws no Select', async ($, on) => {
   world(on, {}, { [PREFS]: { ids: ['cost', 'model'] } })
   await start($)
+  await command($)
+  const band = await $.ui.mount(BAND_MOUNT)
+  const buttons = await band.findAll({ type: 'Button' })
+  const rows = buttons.filter((b) => (b.key ?? '').startsWith('segment:'))
 
-  const ui = await $.ui.mount(PANE_MOUNT)
-  const toggles = (await ui.findAll({ type: 'Button' })).filter((b) => (b.key ?? '').startsWith('toggle:'))
-
-  expect(toggles.map((b) => b.key)).toEqual(['toggle:cost', 'toggle:model', 'toggle:git-branch', 'toggle:directory', 'toggle:branch', 'toggle:github', 'toggle:context', 'toggle:five-hour-limit', 'toggle:weekly-limit', 'toggle:session'])
-  expect(toggles[0].text).toContain('[x] cost')
-  expect(toggles[2].text).toContain('[ ] git branch')
-  expect(await ui.find({ key: 'up:cost' })).toBeDefined()
-  expect(await ui.find({ key: 'up:git-branch' })).toBeUndefined()
-  expect(await ui.find({ type: 'Select', key: 'scheme' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: '$1.23' })).toBeDefined()
+  expect(rows.map((b) => b.key)).toEqual(['segment:cost', 'segment:model', 'segment:git-branch', 'segment:directory', 'segment:branch', 'segment:github', 'segment:context', 'segment:five-hour-limit', 'segment:weekly-limit', 'segment:session'])
+  expect(rows.map((b) => b.props.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'])
+  expect(rows[0].props.label).toBe('[✔] cost')
+  expect(rows[2].props.label).toBe('[ ] git branch')
+  expect(buttons.filter((b) => !(b.key ?? '').startsWith('segment:')).map((b) => [b.key, b.props.hotkey])).toEqual([
+    ['scheme', 's'],
+    ['details', 'h'],
+    ['pin', 'p'],
+    ['up', 'u'],
+    ['down', 'd'],
+    ['reset', 'r'],
+    ['close', 'q'],
+  ])
+  expect(await band.findAll({ type: 'Select' })).toEqual([])
+  expect(await band.find({ type: 'Text', text: /the session cost in dollars/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '$1.23' })).toBeDefined()
 })
 
-test('toggling and moving a segment persists the new order and redraws the line', async ($, on) => {
+test('a press toggles a segment and the line under the prompt follows', async ($, on) => {
   const w = world(on)
   await start($)
-  const pane = await $.ui.mount(PANE_MOUNT)
+  await command($)
+  const band = await $.ui.mount(BAND_MOUNT)
 
-  await pane.press({ key: 'toggle:cost' })
+  await band.press({ key: 'segment:cost' })
   await w.clock.settle()
   expect(w.persisted.get(PREFS)).toEqual({ ids: DEFAULTS.filter((id) => id !== 'cost') })
 
-  await pane.press({ key: 'down:git-branch' })
-  await w.clock.settle()
-  expect((w.persisted.get(PREFS) as { ids: string[] }).ids.slice(0, 2)).toEqual(['model', 'git-branch'])
-
-  await pane.press({ key: 'up:git-branch' })
-  await pane.press({ key: 'up:git-branch' })
-  await w.clock.settle()
-  expect((w.persisted.get(PREFS) as { ids: string[] }).ids.slice(0, 2)).toEqual(['git-branch', 'model'])
-
-  await pane.press({ key: 'toggle:github' })
+  await band.press({ key: 'segment:github' })
   await w.clock.settle()
   const line = await $.ui.mount(MOUNT)
   expect(barText(walk(await line.drawn()))).toBe('demo(feature/hover)Fable5.183K/1M5h 25%7d 62%' + SESSION_ID + 'konsta95/demo')
   expect(w.toasts).toEqual([])
 })
 
-test('the options write this plugin’s own /config rows and close asks the engine to drop the pane', async ($, on) => {
+test('u and d move the segment that last held the focus ring', async ($, on) => {
   const w = world(on)
   await start($)
-  const pane = await $.ui.mount(PANE_MOUNT)
+  await command($)
+  const band = await $.ui.mount(BAND_MOUNT)
 
-  await pane.select({ key: 'scheme', value: 'codex' })
-  await pane.press({ key: 'details' })
-  await pane.press({ key: 'pin' })
+  await personFocus($, 'segment:context')
+  await band.press({ key: 'up' })
+  await w.clock.settle()
+  expect((w.persisted.get(PREFS) as { ids: string[] }).ids.slice(0, 3)).toEqual(['git-branch', 'context', 'model'])
+
+  await band.press({ key: 'down' })
+  await band.press({ key: 'down' })
+  await w.clock.settle()
+  expect((w.persisted.get(PREFS) as { ids: string[] }).ids.slice(0, 4)).toEqual(['git-branch', 'model', 'five-hour-limit', 'context'])
+  expect(w.toasts).toEqual([])
+})
+
+test('u and d with no segment in focus, or on a segment that is off, leave the order alone and say why', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await command($)
+  const band = await $.ui.mount(BAND_MOUNT)
+
+  await band.press({ key: 'up' })
+  await w.clock.settle()
+  expect(w.persisted.has(PREFS)).toBe(false)
+  expect(w.toasts).toEqual(['put the focus on a segment first (ctrl+x tab, then the arrows)'])
+
+  await personFocus($, 'segment:github')
+  await band.press({ key: 'down' })
+  await w.clock.settle()
+  expect(w.persisted.has(PREFS)).toBe(false)
+  expect(w.toasts[1]).toBe('github is off; turn it on to place it')
+})
+
+// The ring keeps its place in the band rather than its element, and the engine lands a
+// plugin's $.ui.focus on the element as drawn before the redraw a press asked for
+// (2.1.280), so the row the ring was on is drawn under a key no drawing had yet, for the
+// ring to be moved onto once the redraw brings it. The ring landing there is checked
+// live: a plugin's own $.ui.focus has no implementation in the kit (2.1.280: it throws,
+// and the test's on('ui.focus') never sees it), and that failed move must cost nothing.
+test('a press that reorders the rows draws the row the ring was on under a key no drawing had yet', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await command($)
+  const band = await $.ui.mount(BAND_MOUNT)
+  const keys = async () => (await band.findAll({ type: 'Button' })).map((b) => b.key ?? '')
+  const fresh = async (before: string[]) => (await keys()).filter((key) => !before.includes(key))
+
+  await personFocus($, 'segment:context')
+  let before = await keys()
+  await band.press({ key: 'up' })
+  const moved = await fresh(before)
+  expect(moved).toHaveLength(1)
+  expect(moved[0]).toStartWith('segment:context#')
+
+  before = await keys()
+  await band.press({ key: 'segment:model' })
+  const kept = await fresh(before)
+  expect(kept).toHaveLength(1)
+  expect(kept[0]).toStartWith('segment:context#')
+
+  before = await keys()
+  await band.press({ key: 'reset' })
+  const reset = await fresh(before)
+  expect(reset).toHaveLength(1)
+  expect(reset[0]).toStartWith('segment:context#')
+
+  await band.press({ key: reset[0] })
+  expect((w.persisted.get(PREFS) as { ids: string[] }).ids).toEqual(DEFAULTS.filter((id) => id !== 'context'))
+  expect(w.toasts).toEqual([])
+})
+
+test('with the ring on Move up the rows keep their keys, so pressing it again moves the same segment', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await command($)
+  const band = await $.ui.mount(BAND_MOUNT)
+
+  await personFocus($, 'segment:session')
+  await personFocus($, 'up')
+  await band.press({ key: 'up' })
+  await band.press({ key: 'up' })
+  expect((w.persisted.get(PREFS) as { ids: string[] }).ids).toEqual(['git-branch', 'model', 'context', 'session', 'five-hour-limit', 'weekly-limit', 'cost'])
+  expect((await band.findAll({ type: 'Button' })).map((b) => b.key ?? '').filter((key) => key.includes('#'))).toEqual([])
+  expect(w.toasts).toEqual([])
+})
+
+test('the options write this plugin’s own /config rows, reset restores the defaults, and close takes the picker down', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await command($)
+  const band = await $.ui.mount(BAND_MOUNT)
+
+  await band.press({ key: 'scheme' })
+  await band.press({ key: 'details' })
+  await band.press({ key: 'pin' })
   await w.clock.settle()
   expect(w.writes).toEqual([
-    { key: 'statusline.scheme', value: 'codex' },
+    { key: 'statusline.scheme', value: 'mono' },
     { key: 'statusline.details', value: false },
     { key: 'statusline.pin_status', value: true },
   ])
 
-  await pane.press({ key: 'reset' })
+  await band.press({ key: 'reset' })
   await w.clock.settle()
   expect(w.persisted.get(PREFS)).toEqual({ ids: DEFAULTS })
 
-  await pane.press({ key: 'close' })
+  await band.press({ key: 'close' })
   await w.clock.settle()
-  expect(w.closed).toHaveLength(1)
-  expect(w.closed[0]).toMatchObject({ id: PANE_ID, origin: { kind: 'plugin' } })
+  expect(w.persisted.has(PICKER)).toBe(false)
+  expect(await band.find({ key: 'segment:model' })).toBeUndefined()
   expect(w.toasts).toEqual([])
 })
 
 test('an option with no /config row is refused with a toast, not a throw', async ($, on) => {
   const w = world(on, { 'config.list': () => ({ value: [] }) })
   await start($)
-  const pane = await $.ui.mount(PANE_MOUNT)
+  await command($)
+  const band = await $.ui.mount(BAND_MOUNT)
 
-  await pane.press({ key: 'details' })
+  await band.press({ key: 'details' })
   await w.clock.settle()
   expect(w.writes).toEqual([])
   expect(w.toasts).toHaveLength(1)
   expect(w.toasts[0]).toContain('no /config row for details')
+})
+
+test('the picker stays open through a module reload for the session that opened it', async ($, on) => {
+  world(on, {}, { [PICKER]: { session: SESSION_ID } })
+  await start($)
+  const band = await $.ui.mount(BAND_MOUNT)
+  expect(await band.find({ key: 'segment:model' })).toBeDefined()
+})
+
+test('a picker another session opened is not drawn', async ($, on) => {
+  world(on, {}, { [PICKER]: { session: 'b7c3a1d2-0e4f-4a6b-8c9d-1f2e3a4b5c6d' } })
+  await start($)
+  const band = await $.ui.mount(BAND_MOUNT)
+  expect(await band.find({ key: 'segment:model' })).toBeUndefined()
+})
+
+test('the picker yields the band to a survey', async ($, on) => {
+  world(on)
+  await start($)
+  await command($)
+  const band = await $.ui.mount({ ...BAND_MOUNT, props: { ...BAND, hasSurvey: true } })
+  expect(await band.find({ key: 'segment:model' })).toBeUndefined()
+})
+
+test('a prompt the person sends closes the picker; a prompt a plugin submits leaves it open', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await command($)
+
+  await $.prompt.submit({ text: 'from a plugin', wait: false, origin: { kind: 'plugin', name: 'other' } })
+  expect(w.persisted.get(PICKER)).toEqual({ session: SESSION_ID })
+
+  await $.prompt.submit({ text: 'hello', wait: false, origin: { kind: 'composer' } })
+  expect(w.persisted.has(PICKER)).toBe(false)
+  const band = await $.ui.mount(BAND_MOUNT)
+  expect(await band.find({ key: 'segment:model' })).toBeUndefined()
+})
+
+// At 100 cells the ten segments take two grid rows, the options two and the footer two.
+test('a band too short for a row per segment draws them as a grid without descriptions, and the footer while it fits', async ($, on) => {
+  world(on)
+  await start($)
+  await command($)
+  const band = await $.ui.mount({ ...BAND_MOUNT, props: { ...BAND, maxRows: 8, bodyColumns: 100, scroll: { offset: 0, bodyRows: 8 } } })
+  const rows = (await band.findAll({ type: 'Button' })).filter((b) => (b.key ?? '').startsWith('segment:'))
+  expect(rows.map((b) => b.props.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'])
+  expect(await band.find({ type: 'Text', text: /the session cost in dollars/ })).toBeUndefined()
+  expect(await band.find({ type: 'Text', text: /ctrl\+x tab/ })).toBeDefined()
+
+  const shorter = await $.ui.mount({ ...BAND_MOUNT, requestId: 'shorter', props: { ...BAND, maxRows: 7, bodyColumns: 100, scroll: { offset: 0, bodyRows: 7 } } })
+  expect((await shorter.findAll({ type: 'Button' })).filter((b) => (b.key ?? '').startsWith('segment:'))).toHaveLength(10)
+  expect(await shorter.find({ type: 'Text', text: /ctrl\+x tab/ })).toBeUndefined()
+
+  const tall = await $.ui.mount({ ...BAND_MOUNT, requestId: 'tall', props: { ...BAND, maxRows: 16, bodyColumns: 100, scroll: { offset: 0, bodyRows: 16 } } })
+  expect(await tall.find({ type: 'Text', text: /the session cost in dollars/ })).toBeDefined()
+})
+
+test('a draw of the band that begins while an earlier one is still reading waits for it to finish', async ($, on) => {
+  let slow = false
+  let idCalls = 0
+  const w = world(
+    on,
+    {
+      'session.id': async () => {
+        idCalls++
+        if (slow) await w.clock.sleep(100)
+        return { value: SESSION_ID }
+      },
+    },
+    { [PICKER]: { session: SESSION_ID } },
+  )
+  await start($)
+  slow = true
+  const before = idCalls
+  const finished: string[] = []
+
+  const first = $.ui.mount(BAND_MOUNT).then((ui) => (finished.push('first'), ui))
+  await w.clock.settle()
+  const second = $.ui.mount({ ...BAND_MOUNT, requestId: 'second' }).then((ui) => (finished.push('second'), ui))
+  await w.clock.settle()
+  expect(idCalls - before).toBe(1)
+  expect(finished).toEqual([])
+
+  await w.clock.advance(100)
+  await Promise.all([first, second])
+  expect(finished).toEqual(['first', 'second'])
+  expect(await (await second).find({ key: 'segment:model' })).toBeDefined()
 })
 
 const STEP = { turnId: 'turn-1', index: 0, messageCount: 1 }
@@ -672,6 +860,8 @@ test('a usage read that returns after a newer refresh has drawn does not put its
   expect(bar).toContain('52K/200K')
   expect(bar).toContain('Opus5.5')
 })
+
+const PANE = { title: 'Bad hover', isFocused: true, bodyColumns: 120, placement: 'inline' as const, scroll: { offset: 0, bodyRows: 20 }, view: {} }
 
 const BAD_HOVER = {
   name: 'bad-hover',

@@ -54,14 +54,33 @@ newer one is dropped.
 
 ## /statusline-mod
 
-In an interactive session `/statusline-mod` opens a dialog pane: a preview of the bar,
-then a row per segment, the chosen ones first in their order and then the rest. A
-digit toggles the segment on that row and ▲ ▼ move a chosen one; the line under the
-prompt follows at once. Below them are the scheme, `h` for hover details, `p` for the
-pinned copy, `r` to reset the segments and `q` to close; Esc closes it too.
+In an interactive session `/statusline-mod` opens a picker in the band directly above
+the prompt, across its full width, where Claude Code draws its own surveys: a preview
+of the bar, a row per segment, the chosen ones first in their order and then the rest,
+and the options. The line under the prompt follows every change at once.
+
+| Key | Pressed in | Does |
+| --- | --- | --- |
+| `1` to `0` | the empty prompt or the band | toggles the segment on that row |
+| ctrl+x tab | the prompt | gives the band the keys, with the focus on the first row |
+| ↑ ↓ | the band | walk the rows and the options, wrapping at either end |
+| Enter | the band | presses the row or option in focus |
+| `u` `d` | the band | move the segment that last had the focus up or down |
+| `s` `h` `p` | the band | the next scheme, hover details on or off, the pinned copy on or off |
+| `r` | the band | resets the segments |
+| `q` | the band | closes the picker |
+| Esc | the band | gives the keys back to the prompt and leaves the picker open |
+
+A toggled segment moves to the end of the chosen ones or back among the rest, and `u`,
+`d` and reset move rows too; through each of these the focus stays on the segment it
+was on. With the focus on Move up or Move down, Enter moves the same segment again. The
+picker closes with `q` or when a prompt is sent, stays open through the module reloads
+an option change causes, and is not drawn in another session. In a band too short for
+a row per segment the segments are laid out in a grid without their descriptions, and
+the footer is drawn while it fits.
 
 The chosen segments and their order are kept in the plugin's store and persist across
-sessions. The options are the plugin's own `/config` rows: the pane writes them, and
+sessions. The options are the plugin's own `/config` rows: the picker writes them, and
 Claude Code reloads the mod with the new value.
 
 `/statusline-mod show` prints the current line and options, and `/statusline-mod reset`
@@ -133,6 +152,28 @@ kept `42K/200K` and the old id. After `/compact` both builds kept `42K/200K`, be
 engine goes on reporting the last response's figure; this build showed the cost growing
 from $0.09 to $0.10 with the compaction's own request, and 0.2.1 kept $0.09.
 
+The picker was driven on 2026-09-22 in Haiku 4.5 sessions on a 280 by 69 pty, the
+owner's fullscreen layout, recording after each key the cells drawn inverted, which is
+where the focus is. There the pane of 0.2.2 docked beside the transcript, and once its
+Scheme select had the focus, ↓ cycled the schemes and the two options after it were
+never reached. In the band, ↓ walked the ten rows and the seven options and wrapped.
+`u`, `u`, `d`, `d` moved the context segment and the focus stayed on it at each new
+row, as it did through a toggle off and back on, a digit toggling another row, and a
+reset. A digit typed into the empty prompt toggled its row, and the next key typed
+reached the prompt. `q` closed the picker, and so did sending a prompt. On a 100 by 30
+pty the band drew the grid with the footer, and the digits and the focus worked the
+same.
+
+Two engine behaviours shaped the picker (2.1.280). After a module reload the engine
+asked for the band twice before the first draw was done; in 11 of 15 runs that reloaded
+the module, every press on the band was dropped afterwards while the focus still moved.
+The mod finishes the band's draws in the order they began, and presses then survived
+the reload in 5 of 5 such runs and in all four reloads of the final runs. And the focus
+keeps its place in the band rather than its element: a plugin's `$.ui.focus` lands on
+the element where the band shows it before the redraw a press asked for, so the mod
+draws the segment the focus was on under a key no drawing had yet, which the engine
+waits for (13 ms in a probe), and the focus lands on the redrawn row.
+
 ## Limits
 
 - Hover is applied by the terminal surface. No hook runs when the pointer moves, so
@@ -155,3 +196,17 @@ from $0.09 to $0.10 with the compaction's own request, and 0.2.1 kept $0.09.
 - `PROBE_RUN` in the environment makes `turn.complete` write a JSON timing dump, under
   `out/<PROBE_RUN>` unless `PROBE_OUT` names another directory. Both exist for
   measurement and are otherwise inert.
+- The picker draws in the band above the prompt, which Claude Code raises on the
+  terminal only, as it does the hint line the bar draws in.
+- A plugin cannot give the band the keys (2.1.280 answers `that site does not hold the
+  keyboard`), so the picker opens with the keys in the prompt: the digits work from
+  there, the arrows and Enter after ctrl+x tab, as the picker's footer says.
+- While the picker is open, a digit typed first into the empty prompt toggles a row,
+  as a survey's digits do. The picker closes once a prompt is sent.
+- The rows are re-sorted after a toggle, the chosen segments first, so after one a
+  digit may name another segment.
+- The kit has no implementation of a plugin's own `$.ui.focus` (2.1.280: the call
+  throws, and the test's `on('ui.focus')` never sees it). The kit checks that the
+  segment is drawn under a new key; the focus landing on it was observed live.
+- The typings say a tree taller than the band scrolls and arms no digit. At 100
+  columns the grid needs six rows, eight with the footer, and a shorter band scrolls it.

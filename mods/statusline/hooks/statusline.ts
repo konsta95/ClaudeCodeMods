@@ -4,13 +4,15 @@ import type { EngineInterface, On, PluginOptions, RenderChildren } from 'claude-
 // JSON payload on stdin and prints one painted line under the prompt; here the same
 // segments are built from the session nouns and drawn in the prompt's hint line, the
 // row the shell version used. Every segment names a hover scope that reveals its
-// details on a card over the row above, and /statusline-mod opens a pane that picks the
-// segments, their order and the options. Hover is applied by the surface: no hook
-// runs when the pointer moves, so nothing here can observe it.
+// details on a card over the row above, and /statusline-mod draws a picker in the band
+// above the prompt that picks the segments, their order and the options. Hover is
+// applied by the surface: no hook runs when the pointer moves, so nothing here can
+// observe it.
 
 const COMMAND = 'statusline-mod'
-const PANE = 'statusline-mod'
 const PREFS = 'statusline.prefs.v1'
+const PICKER = 'statusline.picker.v1'
+const SEGMENT_KEY = 'segment:'
 
 type Pal = {
   path?: string
@@ -60,7 +62,7 @@ const SCHEMES: Record<string, Pal> = {
 
 type Entry = { id: string; label: string; about: string }
 
-// Every segment the bar can carry, in the order the pane lists the ones not chosen.
+// Every segment the bar can carry, in the order the picker lists the ones not chosen.
 export const REGISTRY: readonly Entry[] = [
   { id: 'git-branch', label: 'git branch', about: 'repo(branch), or the directory name outside a repository' },
   { id: 'directory', label: 'directory', about: 'the name of the current directory' },
@@ -102,6 +104,21 @@ let effort: string | number | undefined
 let effortSeed: Promise<void> | null = null
 let prefs: Prefs | null = null
 let interactive = false
+// Whether the picker is open (undefined until this module environment has read the
+// store), the segment row that last held the band's focus ring, the element the ring is
+// on now, and the band's id.
+let pickerOpen: boolean | undefined
+let focusedId: string | undefined
+let ringOn: string | undefined
+let bandId: string | undefined
+// The segment the ring was last moved onto, drawn under a key no earlier drawing had.
+let followed: { id: string; n: number } | undefined
+let follows = 0
+// The band's draws finish in the order they began. After a module reload the engine
+// asks for the band twice before the first draw (the one that gathers) is done; when
+// that first draw finished last, every press on the band was dropped while the focus
+// ring still moved (2.1.280: 3 of 3 logged runs), and in order none was (5 of 5).
+let bandDraw: Promise<void> = Promise.resolve()
 let cfg: Cfg = { schemeName: 'claude-code', pal: SCHEMES['claude-code'], mono: false, details: true, pinStatus: false }
 
 // Wall-clock samples of the two costs the classic command pays per update as one
@@ -451,6 +468,97 @@ async function moveId($: EngineInterface, id: string, delta: number): Promise<vo
   await applyIds($, ids)
 }
 
+// The picker stays open for the session that opened it: an option change reloads the
+// module, so the state lives in the store under that session's id, read back once per
+// module environment; another session, or a failed read, finds it closed.
+async function isPickerOpen($: EngineInterface): Promise<boolean> {
+  if (pickerOpen !== undefined) return pickerOpen
+  let open = false
+  try {
+    const stored = await $.store.get(PICKER)
+    const session = await $.session.id()
+    open = !!stored && typeof stored === 'object' && (stored as { session?: unknown }).session === session
+  } catch {
+    open = false
+  }
+  if (pickerOpen === undefined) pickerOpen = open
+  return pickerOpen
+}
+
+async function setPicker($: EngineInterface, open: boolean): Promise<void> {
+  pickerOpen = open
+  if (!open) {
+    focusedId = undefined
+    ringOn = undefined
+    followed = undefined
+  }
+  $.ui.invalidate('ui.render')
+  if (open) await $.store.set(PICKER, { session: await $.session.id() })
+  else await $.store.delete(PICKER)
+}
+
+function segmentKey(id: string): string {
+  return SEGMENT_KEY + id + (followed?.id === id ? '#' + followed.n : '')
+}
+
+function segmentOf(key: string | undefined): string | undefined {
+  return key?.startsWith(SEGMENT_KEY) ? key.slice(SEGMENT_KEY.length).split('#')[0] : undefined
+}
+
+// The ring keeps its place in the band, not its element, and a plugin's $.ui.focus lands
+// on the element where the band shows it when the call arrives, before the redraw the
+// press asked for (both measured on 2.1.280). So once a press has reordered the rows,
+// the segment the ring was on is drawn under a key no drawing had yet, which the engine
+// waits for: the ring lands where the redraw puts that row. The plugin's own ui.focus
+// hook does not see that move (2.1.280), so the ring's element is noted here. While the
+// band does not hold the keys (a digit pressed from the prompt) the engine refuses the
+// move; a move that fails leaves the ring where it was, and the press has done its work.
+async function keepRing($: EngineInterface): Promise<void> {
+  const id = segmentOf(ringOn)
+  if (bandId === undefined || id === undefined) return
+  followed = { id, n: ++follows }
+  const key = segmentKey(id)
+  $.ui.invalidate('ui.render')
+  const moved = await $.ui.focus({ requestId: bandId, key }).catch(() => ({ deny: 'failed' }))
+  if (moved.deny === undefined) ringOn = key
+}
+
+async function toggleFromBand($: EngineInterface, id: string): Promise<void> {
+  await toggleId($, id)
+  await keepRing($)
+}
+
+// u and d move the segment row that last held the band's focus ring.
+async function moveFocused($: EngineInterface, delta: number): Promise<void> {
+  const entry = REGISTRY.find((r) => r.id === focusedId)
+  if (!entry) {
+    $.ui.toast('put the focus on a segment first (ctrl+x tab, then the arrows)')
+    return
+  }
+  if (!(await loadPrefs($)).ids.includes(entry.id)) {
+    $.ui.toast(entry.label + ' is off; turn it on to place it')
+    return
+  }
+  await moveId($, entry.id, delta)
+  await keepRing($)
+}
+
+// Rows a run of items takes when laid out left to right with `gap` cells between them
+// and wrapped at `width`, as a wrapping Box row lays them.
+function packedRows(widths: number[], width: number, gap: number): number {
+  let rows = 0
+  let used = 0
+  for (const w of widths) {
+    if (rows === 0 || used + gap + w > width) {
+      rows++
+      used = w
+    } else {
+      used += gap + w
+    }
+  }
+  return rows
+}
+
 // An option lives in the /config row this plugin's userConfig field declares; the row
 // is looked up by field name because the key carries the loaded plugin's name, which
 // a marketplace install spells differently from a --plugin-dir load.
@@ -459,11 +567,11 @@ async function setOption($: EngineInterface, field: string, value: string | bool
   const rows = await $.config.list()
   const row = rows.find((r) => r.provider.plugin !== 'engine' && pluginName(r.provider.plugin) === mine && r.key.endsWith('.' + field))
   if (!row) {
-    $.ui.toast('statusline: no /config row for ' + field + ' (the plugin was not loaded through /config)')
+    $.ui.toast('no /config row for ' + field + ' (the plugin was not loaded through /config)')
     return
   }
   const result = await $.config.set({ key: row.key, value })
-  if (result.deny !== undefined) $.ui.toast('statusline: ' + field + ' refused: ' + result.deny)
+  if (result.deny !== undefined) $.ui.toast(field + ' refused: ' + result.deny)
 }
 
 function summary(p: Prefs): string {
@@ -525,11 +633,11 @@ function refreshQuietly($: EngineInterface, src: string, usageOnly = false): Pro
   })
 }
 
-// Pane presses run one after another; a failure becomes a toast, never a lost pane.
+// Picker presses run one after another; a failure becomes a toast, never a lost picker.
 let actions: Promise<unknown> = Promise.resolve()
 function act($: EngineInterface, operation: () => Promise<unknown>): void {
   actions = actions.then(operation).catch((error) => {
-    $.ui.toast('statusline: ' + errorText(error))
+    $.ui.toast(errorText(error))
   })
 }
 
@@ -699,89 +807,111 @@ export function register(on: On, options: PluginOptions) {
     }
     if (arg === 'show' || (arg === '' && !interactive)) return { text: summary(await loadPrefs($)) }
     if (arg !== '') return { text: 'Usage: /' + COMMAND + ' [show | reset]' }
-    await $.ui.open({ id: PANE, title: 'Status line', focus: true, closeOnEscape: true, holdToasts: true, rows: 20 })
+    await setPicker($, true)
     return {}
   })
 
-  // The pane: a preview of the bar, a row per segment (a digit toggles it, the arrows
-  // move it while it is on), then the options, which write the plugin's own /config
-  // rows so the engine reloads the module with them.
-  on('ui.render', { component: 'Pane' }, async ($, e, next) => {
-    if (e.requestId !== PANE) return next(e)
-    const elements = await $.ui.resolve(e)
-    const { Box, Text, Button } = elements
-    const p = await loadPrefs($)
-    if (!snap) snap = await gather($, 'ui.render')
-    const { pal, mono, details, pinStatus, schemeName } = cfg
-    const segs = build(snap, pal, p.ids)
+  // A prompt the person sends closes the picker, as the engine's own dialogs are gone
+  // once answered: while it is open, a digit typed first into an empty prompt is the
+  // picker's (the band's rule for surveys), so it stays open no longer than it is used.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'composer' && (await isPickerOpen($))) await setPicker($, false).catch(() => undefined)
+    return next(e)
+  })
 
-    const preview: RenderChildren[] = [Text({ children: 'Preview  ', dimColor: true })]
-    segs.forEach((seg, i) => {
-      if (i) preview.push(Text({ children: '|', color: pal.sep, dimColor: mono || !pal.sep }))
-      for (const piece of seg.pieces) preview.push(Text({ children: piece.text, color: mono ? undefined : piece.color, dimColor: mono || seg.failed }))
-    })
-    if (!segs.length) preview.push(Text({ children: '(nothing to draw)', dimColor: true }))
-
-    const children: RenderChildren[] = [
-      Box({ flexDirection: 'row', children: preview }),
-      Text({ children: 'Segments: a digit toggles one, ▲ ▼ move it; the line under the prompt follows at once.', dimColor: true }),
-    ]
-    const order = [...p.ids, ...REGISTRY.map((r) => r.id).filter((id) => !p.ids.includes(id))]
-    order.forEach((id, i) => {
-      const entry = REGISTRY.find((r) => r.id === id)
-      if (!entry) return
-      const chosen = p.ids.includes(id)
-      const row: RenderChildren[] = [
-        Button({
-          key: 'toggle:' + id,
-          label: (chosen ? '[x] ' : '[ ] ') + entry.label,
-          ...(i < 9 ? { hotkey: String(i + 1) } : {}),
-          plain: true,
-          onPress: () => act($, () => toggleId($, id)),
-        }),
-      ]
-      if (chosen) {
-        row.push(
-          Text({ children: ' ' }),
-          Button({ key: 'up:' + id, label: '▲', plain: true, dimColor: true, onPress: () => act($, () => moveId($, id, -1)) }),
-          Text({ children: ' ' }),
-          Button({ key: 'down:' + id, label: '▼', plain: true, dimColor: true, onPress: () => act($, () => moveId($, id, 1)) }),
-        )
-      }
-      row.push(Text({ children: '  ' + entry.about, dimColor: true }))
-      children.push(Box({ flexDirection: 'row', children: row }))
-    })
-
-    children.push(Text({ children: ' ' }))
-    const schemes = Object.keys(SCHEMES)
-    if (e.surface !== 'mobile' && 'Select' in elements) {
-      children.push(
-        elements.Select({
-          key: 'scheme',
-          label: 'Scheme ',
-          options: schemes.map((value) => ({ value, label: value })),
-          value: schemeName,
-          onSelect: (value) => act($, () => setOption($, 'scheme', value)),
-        }),
-      )
-    } else {
-      const following = schemes[(schemes.indexOf(schemeName) + 1) % schemes.length]
-      children.push(Button({ key: 'scheme', label: 'Scheme: ' + schemeName, hotkey: 's', onPress: () => act($, () => setOption($, 'scheme', following)) }))
+  // The focus ring's moves in the band: the element it lands on, and among them the
+  // segment row u and d move. Escape hands the keys back without a move, and u and d are
+  // pressed only while the band holds them, which it takes back with a move (ctrl+x tab,
+  // a click).
+  on('ui.focus', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const result = await next(e)
+    if (result.deny === undefined) {
+      ringOn = e.element
+      focusedId = segmentOf(e.element) ?? focusedId
     }
-    children.push(
-      Button({ key: 'details', label: (details ? '[x] ' : '[ ] ') + 'Reveal a segment’s details under the pointer', hotkey: 'h', plain: true, onPress: () => act($, () => setOption($, 'details', !details)) }),
-      Button({ key: 'pin', label: (pinStatus ? '[x] ' : '[ ] ') + 'Also pin a plain copy of the bar', hotkey: 'p', plain: true, onPress: () => act($, () => setOption($, 'pin_status', !pinStatus)) }),
-      Text({ children: 'The options are /config rows: changing one reloads the mod with the new value.', dimColor: true }),
-      Text({ children: ' ' }),
-      Box({
+    return result
+  })
+
+  // The picker, in the band directly above the prompt where the surveys draw: the bar as
+  // it will look, a row per segment (a digit toggles it, from the empty prompt as well),
+  // then the options, which write the plugin's own /config rows so the engine reloads
+  // the module with them. No Select: a focused one keeps the arrows (measured on
+  // 2.1.280, where it held them and the rows after it were never reached). A plugin
+  // cannot hand the band the keyboard (2.1.280 answers "that site does not hold the
+  // keyboard"), so the arrows and Enter follow ctrl+x tab, as the footer says. A tree
+  // taller than the band scrolls and arms no digit, so a short band gets a grid, and the
+  // footer while it fits.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const previous = bandDraw
+    let finished = () => {}
+    bandDraw = new Promise<void>((resolve) => {
+      finished = resolve
+    })
+    try {
+      await previous
+      bandId = e.requestId
+      if (e.props.hasSurvey || !(await isPickerOpen($))) return next(e)
+      const { Box, Text, Button } = await $.ui.resolve(e)
+      const p = await loadPrefs($)
+      if (!snap) snap = await gather($, 'ui.render')
+      const { pal, mono, details, pinStatus, schemeName } = cfg
+      const width = Math.max(20, e.props.bodyColumns)
+
+      const title: RenderChildren[] = [Text({ children: 'Status line  ', bold: true, wrap: 'truncate' })]
+      const segs = build(snap, pal, p.ids)
+      segs.forEach((seg, i) => {
+        if (i) title.push(Text({ children: '|', color: pal.sep, dimColor: mono || !pal.sep, wrap: 'truncate' }))
+        for (const piece of seg.pieces) title.push(Text({ children: piece.text, color: mono ? undefined : piece.color, dimColor: mono || seg.failed, wrap: 'truncate' }))
+      })
+      if (!segs.length) title.push(Text({ children: '(nothing to draw)', dimColor: true, wrap: 'truncate' }))
+
+      const order = [...p.ids, ...REGISTRY.map((r) => r.id).filter((id) => !p.ids.includes(id))]
+      const entries = order.map((id) => REGISTRY.find((r) => r.id === id)).filter((r): r is Entry => r !== undefined)
+      const labels = entries.map((entry) => (p.ids.includes(entry.id) ? '[✔] ' : '[ ] ') + entry.label)
+      const labelWidth = Math.max(...labels.map((label) => label.length))
+      const segments = entries.map((entry, i) => {
+        const hotkey = i < 9 ? String(i + 1) : i === 9 ? '0' : undefined
+        const button = Button({ key: segmentKey(entry.id), label: labels[i], ...(hotkey ? { hotkey } : {}), plain: true, onPress: () => act($, () => toggleFromBand($, entry.id)) })
+        return hotkey ? [button] : [Text({ children: '   ' }), button]
+      })
+
+      const schemes = Object.keys(SCHEMES)
+      const following = schemes[(schemes.indexOf(schemeName) + 1) % schemes.length]
+      const choices: Array<{ key: string; hotkey: string; label: string; press: () => Promise<unknown> }> = [
+        { key: 'scheme', hotkey: 's', label: 'Scheme ' + schemeName, press: () => setOption($, 'scheme', following) },
+        { key: 'details', hotkey: 'h', label: (details ? '[✔] ' : '[ ] ') + 'Hover details', press: () => setOption($, 'details', !details) },
+        { key: 'pin', hotkey: 'p', label: (pinStatus ? '[✔] ' : '[ ] ') + 'Pin a plain copy', press: () => setOption($, 'pin_status', !pinStatus) },
+        { key: 'up', hotkey: 'u', label: 'Move up', press: () => moveFocused($, -1) },
+        { key: 'down', hotkey: 'd', label: 'Move down', press: () => moveFocused($, 1) },
+        { key: 'reset', hotkey: 'r', label: 'Reset', press: () => applyIds($, [...DEFAULT_IDS]).then(() => keepRing($)) },
+        { key: 'close', hotkey: 'q', label: 'Close', press: () => setPicker($, false) },
+      ]
+      const options = Box({
         flexDirection: 'row',
-        gap: 2,
-        children: [
-          Button({ key: 'reset', label: 'Reset segments', hotkey: 'r', onPress: () => act($, () => applyIds($, [...DEFAULT_IDS])) }),
-          Button({ key: 'close', label: 'Close', hotkey: 'q', onPress: () => act($, () => $.ui.close({ id: PANE })) }),
-        ],
-      }),
-    )
-    return Box({ flexDirection: 'column', children })
+        flexWrap: 'wrap',
+        columnGap: 3,
+        children: choices.map((c) => Button({ key: c.key, label: c.label, hotkey: c.hotkey, plain: true, onPress: () => act($, c.press) })),
+      })
+      const optionRows = packedRows(choices.map((c) => c.label.length + 3), width, 3)
+      const footer = '1-0 toggle a segment, from the empty prompt too · ctrl+x tab to use ↑/↓ and Enter · u/d move the segment in focus · q closes'
+      const rule = Text({ children: '─'.repeat(width), dimColor: true, wrap: 'truncate' })
+      const head = Box({ flexDirection: 'row', children: title })
+      const hint = Text({ children: footer, dimColor: true })
+      const footerRows = Math.ceil(footer.length / width)
+
+      if (2 + entries.length + optionRows + footerRows <= e.props.maxRows) {
+        const rows = entries.map((entry, i) =>
+          Box({ flexDirection: 'row', children: [...segments[i], Text({ children: ' '.repeat(labelWidth - labels[i].length + 2) + entry.about, dimColor: true, wrap: 'truncate' })] }),
+        )
+        return Box({ flexDirection: 'column', children: [rule, head, ...rows, options, hint] })
+      }
+      const cell = labelWidth + 3 + 3
+      const grid = Box({ flexDirection: 'row', flexWrap: 'wrap', children: segments.map((children) => Box({ width: cell, children })) })
+      const gridRows = packedRows(segments.map(() => cell), width, 0)
+      const tail = 2 + gridRows + optionRows + footerRows <= e.props.maxRows ? [options, hint] : [options]
+      return Box({ flexDirection: 'column', children: [rule, head, grid, ...tail] })
+    } finally {
+      finished()
+    }
   })
 }
