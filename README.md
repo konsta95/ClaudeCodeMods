@@ -30,13 +30,16 @@ From a clone, load one mod for a single session:
 
     CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir mods/statusline
 
-Or add the clone as a marketplace and install the mods you want. This was checked on
-2026-09-22 with a directory source, all three mods installing and listing as enabled:
+Or add the repository as a marketplace and install the mods you want. Checked on
+2026-09-22 from GitHub at commit 334509e and from a local clone as a directory source,
+all three mods installing and listing as enabled:
 
-    claude plugin marketplace add /path/to/ClaudeCodeMods
+    claude plugin marketplace add konsta95/ClaudeCodeMods
     claude plugin install statusline@ClaudeCodeMods
     claude plugin install hidevalues@ClaudeCodeMods
     claude plugin install mod-settings@ClaudeCodeMods
+
+A local clone works the same way with its path in place of `konsta95/ClaudeCodeMods`.
 
 Each mod declares its options under `userConfig` in its manifest. Set them with
 `/plugin configure <mod>@ClaudeCodeMods`, with `--config KEY=VALUE` on install, or
