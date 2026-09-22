@@ -12,6 +12,10 @@ Boolean controls toggle; choice controls use a selector on terminal and cycle on
 
 The preview shows observed plugin admissions and recent dispatch summaries. Traces are captured only while the pane is open; closed-pane dispatches do not read or write trace storage. Individual settings do not declare their corresponding events in the engine schema, so the pane explicitly labels that gap and displays the provider's observed events instead.
 
+## In /config
+
+While this mod is enabled, every `/config` row of a mod installed from the ClaudeCodeMods marketplace is labelled `ClaudeCodeMods: <title>`, so those rows carry that category in the built-in Config tab. Claude Code 2.1.280 lets a plugin relabel, re-describe or hide a `/config` row but not add a tab to the Settings dialog, so the rows stay in the Config tab rather than in a tab of their own. The menu lists them mod by mod and names each row's mod after its label: `ClaudeCodeMods: Colour scheme · statusline`. Rows of the engine, of other marketplaces and of mods loaded with `--plugin-dir` keep their labels. The pane lists the same rows by their titles alone, under their mod.
+
 ## Provider metadata
 
 The optional `hooks/settings.json` file, falling back to `settings.json` at the plugin root, can declare groups, risk text and presets. Keys can be local field names or full setting keys. Presets and defaults are checked against the provider's visible rows before writing.
@@ -43,6 +47,8 @@ This mod was written in a Codex round under the owner's session in September 202
 
 0.2.1 follows Claude Code 2.1.280, where `$.model.complete` resolves a result object instead of a string. 0.2.0 stored that object as the explanation, and in the kit on 2.1.280 the pane's render hook then failed with `state.explanation.slice is not a function` and was skipped. 0.2.1 shows the reply's text, or `No explanation (<reason>).` when the model gave none, and still draws a view saved with such an object. Verified from this repository on 2026-09-22 against 2.1.280: `claude plugin test` 37 of 37 across two files, `claude plugin validate` clean, strict `tsc` clean. The live observations below were made on 2.1.278.
 
+0.3.0 adds the `/config` labels. Verified from this repository on 2026-09-22 against 2.1.280: `claude plugin test` 40 of 40 across two files, `claude plugin validate` clean, strict `tsc` clean. Observed live on 2.1.280 in Haiku 4.5 probe sessions, with the installed `statusline` and `hidevalues` beside this mod loaded from the repository. `/config` drew its label column 42 cells wide at 160 and at 280 columns, so a first form of the label, `ClaudeCodeMods/<mod>: <title>`, cut five of the eight titles at both widths. At 280 columns the form above keeps seven whole and cuts `Minimum entropy (bits per character)`. The engine answers this mod's own `$.config.list` with the new labels: in a copy without the title strip the pane showed `[x] ClaudeCodeMods: Hover details` on all 13 of its screens, and this build showed the titles alone on all 13.
+
 Observed live on 2.1.278: in two probe sessions the pane opened from `/mods`, an Apply of a toggle wrote the value and Undo restored it; in four runs with the `statusline` and `hidevalues` mods loaded beside this one, `/mods set statusline.details=false` answered in 0.53 to 0.62 s and the status bar's details row disappeared and came back about 0.5 s later, and the pane listed the other two mods' eight options in three of the four.
 
 Open limits:
@@ -51,3 +57,6 @@ Open limits:
 - In the run where the pane listed no options, the first load of a fresh configuration, the cause was not isolated.
 - During the first of the two Apply and Undo probes the settings file's checksum changed across the pair. The keys that changed (`effortLevel`, `autoCompactWindow`, `dialogExpiry`, `timeFormat`, `verbose`, `enableArtifact`, `alwaysThinkingEnabled`) are engine settings this mod does not write, and the writer was not attributed. The second probe restored the toggle with the checksum unchanged.
 - When this mod loads after a provider, that provider's rows are visible but its defaults and presets are not: Reset reports `declared defaults not observed`.
+- Filtering the Config tab by typing `ClaudeCodeMods` into its search was not observed live: the probe types one line, and `/config ClaudeCodeMods` is refused with `Expected key=value, got "ClaudeCodeMods". Run /config to open settings.`
+- The label column cuts a long title and the menu's ` · <mod>` suffix after it: `ClaudeCodeMods: Minimum entropy (bits per…`.
+- A mod loaded with `--plugin-dir` is never labelled, because its rows' owner is not named `<mod>@ClaudeCodeMods`; this mod's own row, loaded that way in the probes, kept its label.

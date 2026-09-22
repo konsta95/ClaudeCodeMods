@@ -14,6 +14,15 @@ type Metadata = { groups: Record<string, string[]>; risk: Record<string, string>
 const freshView = (): View => ({ draft: {}, errors: {}, focused: '', notice: '', explanation: '' })
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const pluginName = (name: string) => name.split('@')[0]
+// In the /config menu each row of a mod installed from the ClaudeCodeMods marketplace is
+// labelled with that category ahead of its title, so those rows stay in the built-in
+// Config tab and filter together by search (owner decision 01b9bb478b16). The menu
+// itself lists them mod by mod and appends each row's mod to its label.
+const MARKETPLACE = 'ClaudeCodeMods'
+function categoryPrefix(plugin: string): string | undefined {
+  const at = plugin.lastIndexOf('@')
+  return at > 0 && plugin.slice(at + 1) === MARKETPLACE ? MARKETPLACE + ': ' : undefined
+}
 const own = (object: object, key: string) => Object.prototype.hasOwnProperty.call(object, key)
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
 const configValue = (value: unknown): value is ConfigValue => typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) || (Array.isArray(value) && value.every(item => typeof item === 'string'))
@@ -46,8 +55,13 @@ async function rememberTrace($: EngineInterface, event: string, entries: readonl
   traces[event] = entries.map(item => ({ plugin: item.plugin, tier: item.tier, index: item.index, outcome: item.outcome, ms: item.ms }))
   await $.store.set(TRACES, traces)
 }
+// $.config.list answers each row as the menu labels it; the pane already lists a row
+// under its mod, so it shows the title alone.
 async function rows($: EngineInterface) {
-  return (await $.config.list()).filter(row => row.provider.plugin !== 'engine')
+  return (await $.config.list()).filter(row => row.provider.plugin !== 'engine').map(row => {
+    const prefix = categoryPrefix(row.provider.plugin)
+    return prefix && row.label.startsWith(prefix) ? { ...row, label: row.label.slice(prefix.length) } : row
+  })
 }
 async function jsonFile($: EngineInterface, path: string) {
   if (!await $.fs.exists(path)) return undefined
@@ -233,6 +247,11 @@ export function register(on: On, options: PluginOptions) {
     }
     $.ui.invalidate('ui.render')
     return result
+  })
+  on('config.describe', async ($, e, next) => {
+    const described = await next(e)
+    const prefix = categoryPrefix(e.provider.plugin)
+    return prefix && !described.label.startsWith(prefix) ? { ...described, label: prefix + described.label } : described
   })
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const result = await next(e)

@@ -483,3 +483,33 @@ test('kit admission reachability: this inline replay does not include the mod un
   console.log('ADMISSION_REACH ' + JSON.stringify(result))
   expect(result).toMatchObject({ result: { toasts: [], counts: [0, 0, 0], traces: [['engine'], ['engine']] } })
 })
+
+// Beneath the mods, the menu's own answer for a row: the row as it came.
+function menu(on: On) {
+  on('config.describe', ($, e) => ({ label: e.label, description: e.description, isHidden: e.isHidden }))
+}
+const MENU_ROW = { key: 'statusline.scheme', label: 'Colour scheme', description: 'Which palette paints the segments.', isHidden: false, provider: { plugin: 'statusline@ClaudeCodeMods', tier: 'user' as const } }
+
+test('/config: a ClaudeCodeMods row is labelled with the category ahead of its title', async ($, on) => {
+  world(on, [])
+  menu(on)
+  expect(await $.config.describe(MENU_ROW)).toEqual({ label: 'ClaudeCodeMods: Colour scheme', description: 'Which palette paints the segments.', isHidden: false })
+})
+
+test('/config: rows of the engine, other marketplaces and plugin-dir loads keep their labels, and none is labelled twice', async ($, on) => {
+  world(on, [])
+  menu(on)
+  expect((await $.config.describe({ key: 'theme', label: 'Theme', isHidden: false, provider: { plugin: 'engine', tier: 'core' } })).label).toBe('Theme')
+  for (const plugin of ['agents-md@elsewhere', 'statusline', 'statusline@inline', 'statusline@ClaudeCodeModsFork', '@ClaudeCodeMods']) {
+    expect((await $.config.describe({ ...MENU_ROW, provider: { plugin, tier: 'user' } })).label).toBe('Colour scheme')
+  }
+  expect((await $.config.describe({ ...MENU_ROW, label: 'ClaudeCodeMods: Colour scheme' })).label).toBe('ClaudeCodeMods: Colour scheme')
+})
+
+test('the /mods pane lists a relabelled ClaudeCodeMods row by its own title', async ($, on) => {
+  world(on, [{ ...TOGGLE, key: 'statusline.details', label: 'ClaudeCodeMods: Hover details', provider: { plugin: 'statusline@ClaudeCodeMods', tier: 'user' } }])
+  const ui = await $.ui.mount(MOUNT)
+  expect((await ui.find({ key: 'row:statusline.details' }))?.text).toContain('[x] Hover details')
+  expect((await ui.find({ key: 'explain:statusline.details' }))?.text).toContain('Explain Hover details')
+  expect(await ui.find({ text: /ClaudeCodeMods:/ })).toBeUndefined()
+})
