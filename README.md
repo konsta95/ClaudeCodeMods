@@ -7,7 +7,7 @@ listing all of them.
 
 | Mod | What it does | Verified |
 | --- | --- | --- |
-| [`statusline`](mods/statusline) | The [ClaudeCodeStatusline](https://github.com/konsta95/ClaudeCodeStatusline) bar as a function hook: drawn in the hint line under the prompt, where the shell version drew, from the session's own nouns; each segment reveals its details on hover, and `/statusline-mod` opens a pane that picks the segments, their order and the scheme. | kit 25 of 25, strict typecheck clean, hover and model switch observed live on 2.1.280 as its README records |
+| [`statusline`](mods/statusline) | The [ClaudeCodeStatusline](https://github.com/konsta95/ClaudeCodeStatusline) bar as a function hook: drawn in the hint line under the prompt, where the shell version drew, from the session's own nouns; each segment reveals its details on hover, and `/statusline-mod` opens a pane that picks the segments, their order and the scheme. | kit 30 of 30, strict typecheck clean, hover, model switch and context updates observed live on 2.1.280 as its README records |
 | [`hidevalues`](mods/hidevalues) | Hides high-entropy tokens and e-mail addresses in Bash tool rows until the pointer is over them. | kit 7 of 7, strict typecheck clean, hide and reveal observed live on 2.1.278; in the classic UI the hide draws and nothing reveals |
 | [`mod-settings`](mods/mod-settings) | `/mods`: a pane listing the mods' visible settings, with drafts, presets, reset and undo. | kit 37 of 37, strict typecheck clean, Apply and Undo observed live on 2.1.278 in two probe sessions; open limits in its README |
 

@@ -510,6 +510,169 @@ test('a refresh that finishes after a newer one does not put the older model bac
   expect(bar).not.toContain('Fable')
 })
 
+// A core command typed at the prompt, the way the engine raises it.
+const core = ($: Engine, name: string) =>
+  $.command.run({ command: name, args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 140 } })
+
+test('the context follows each main-loop response while its tools run, before the turn completes', async ($, on) => {
+  let context: Record<string, number> = { tokens: 12000, window: 200000 }
+  let stepping = false
+  let readAtRequest!: () => void
+  const requestRead = new Promise<void>((resolve) => (readAtRequest = resolve))
+  world(on, {
+    'session.usage': () => {
+      if (stepping) readAtRequest()
+      return { value: { ...USAGE, context } }
+    },
+    // Beneath the plugin, a model request whose response is answered over 37K tokens.
+    // The engine sends the request before the response reports that figure, so a read
+    // as the request goes out still sees the figure of the response before it.
+    'turn.step': async function* () {
+      await requestRead
+      context = { tokens: 37000, window: 200000 }
+      return { ...STEP_RESULT }
+    },
+  })
+  await start($)
+  expect(barText(walk(await (await $.ui.mount(MOUNT)).drawn()))).toContain('12K/200K')
+
+  stepping = true
+  await step($, { model: 'claude-fable-5-1', effort: 'max' })
+
+  // The request has returned and the turn has not completed: the response's tools run now.
+  const whileToolsRun = barText(walk(await (await $.ui.mount({ ...MOUNT, requestId: 'tools-running' })).drawn()))
+  expect(whileToolsRun).toContain('37K/200K')
+})
+
+test('/clear redraws the bar with the new session and its empty context once the command has run', async ($, on) => {
+  const NEW_ID = 'b7c3a1d2-0e4f-4a6b-8c9d-1f2e3a4b5c6d'
+  let id = SESSION_ID
+  let usage: Record<string, unknown> = USAGE
+  world(on, {
+    'session.id': () => ({ value: id }),
+    'session.usage': () => ({ value: usage }),
+    // Beneath the plugin, the core /clear: the process goes on under a new session id
+    // whose context no response has measured yet.
+    'command.run': (_$: any, e: any) => {
+      if (e.command === 'clear') {
+        id = NEW_ID
+        usage = { ...USAGE, context: { window: 1000000 }, cost: { usd: 0 } }
+      }
+      return { text: '' }
+    },
+  })
+  await start($)
+  expect(barText(walk(await (await $.ui.mount(MOUNT)).drawn()))).toContain('83K/1M')
+
+  await core($, 'clear')
+
+  const after = await $.ui.mount({ ...MOUNT, requestId: 'after-clear' })
+  const bar = barText(walk(await after.drawn()))
+  expect(await after.find({ type: 'Text', text: '0/1M' })).toBeDefined()
+  expect(bar).toContain(NEW_ID)
+  expect(bar).not.toContain(SESSION_ID)
+})
+
+// Measured on 2.1.280: after /compact the context keeps the figure of the last response
+// (the compaction's own request is not one), and the cost has grown by that request.
+test('/compact redraws the bar with the cost the compaction added once it has run', async ($, on) => {
+  let usage: Record<string, unknown> = { ...USAGE, context: { tokens: 42000, window: 200000 }, cost: { usd: 0.09 } }
+  world(on, {
+    'session.usage': () => ({ value: usage }),
+    'command.run': (_$: any, e: any) => {
+      if (e.command === 'compact') usage = { ...usage, cost: { usd: 0.1 } }
+      return { text: 'Compacted' }
+    },
+  })
+  await start($)
+  expect(barText(walk(await (await $.ui.mount(MOUNT)).drawn()))).toContain('$0.09')
+
+  await core($, 'compact')
+
+  const bar = barText(walk(await (await $.ui.mount({ ...MOUNT, requestId: 'after-compact' })).drawn()))
+  expect(bar).toContain('42K/200K')
+  expect(bar).toContain('$0.10')
+})
+
+test('a usage read that works once the response has arrived clears the mark a failed read left', async ($, on) => {
+  let failing = false
+  let stepping = false
+  let readAtRequest!: () => void
+  const requestRead = new Promise<void>((resolve) => (readAtRequest = resolve))
+  world(on, {
+    'session.usage': () => {
+      if (stepping) readAtRequest()
+      if (failing) throw new Error('usage unavailable')
+      return { value: USAGE }
+    },
+    // The read as the request goes out fails; by the time the response has arrived
+    // the usage reads again.
+    'turn.step': async function* () {
+      await requestRead
+      failing = false
+      return { ...STEP_RESULT }
+    },
+  })
+  await start($)
+  failing = true
+  stepping = true
+
+  await step($, { model: 'claude-fable-5-1', effort: 'max' })
+
+  const ui = await $.ui.mount({ ...MOUNT, requestId: 'after-recovery' })
+  expect(await ui.find({ type: 'Text', text: 'context!' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: '83K/1M' })).toBeDefined()
+})
+
+test('a usage read that returns after a newer refresh has drawn does not put its older figures back', async ($, on) => {
+  let context: Record<string, number> = { tokens: 12000, window: 200000 }
+  let model = 'claude-fable-5-1'
+  let stepping = false
+  let reads = 0
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  let markHeld!: () => void
+  const heldStarted = new Promise<void>((resolve) => (markHeld = resolve))
+  world(on, {
+    'session.model': () => ({ value: model }),
+    // The step's second read is the one once its response has arrived: it sees 37K and
+    // is held until the refresh after a /config write has drawn newer figures.
+    'session.usage': async () => {
+      const seen = context
+      if (stepping && ++reads === 2) {
+        markHeld()
+        await held
+      }
+      return { value: { ...USAGE, context: seen } }
+    },
+    'turn.step': async function* () {
+      context = { tokens: 37000, window: 200000 }
+      return { ...STEP_RESULT }
+    },
+    // Whatever moved the figures while the read was out, the refresh after the write
+    // began later and reads them.
+    'config.set': (_$: any, e: any) => {
+      if (e.key === 'model') {
+        model = String(e.value)
+        context = { tokens: 52000, window: 200000 }
+      }
+      return { value: e.value }
+    },
+  })
+  await start($)
+  stepping = true
+
+  const stepDone = step($, { model: 'claude-fable-5-1', effort: 'max' })
+  await heldStarted
+  await $.config.set({ key: 'model', value: 'claude-opus-5-5[1m]', previous: 'claude-fable-5-1', provider: { plugin: 'engine', tier: 'core' }, origin: { kind: 'composer' } })
+  release()
+  await stepDone
+
+  const bar = barText(walk(await (await $.ui.mount({ ...MOUNT, requestId: 'after-both' })).drawn()))
+  expect(bar).toContain('52K/200K')
+  expect(bar).toContain('Opus5.5')
+})
+
 const BAD_HOVER = {
   name: 'bad-hover',
   register(on: any) {

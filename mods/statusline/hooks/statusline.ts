@@ -245,6 +245,27 @@ async function gather($: EngineInterface, src: string): Promise<Snap> {
   }
 }
 
+// The figures a model response moves: the context it was answered over, the
+// rate-limit windows it reported and what the session has cost. errors holds the
+// reason for each of their segments when the read failed.
+type UsageRead = Pick<Snap, 'context' | 'five' | 'seven' | 'cost' | 'errors'>
+const USAGE_IDS = ['context', 'five-hour-limit', 'weekly-limit', 'cost']
+async function readUsage($: EngineInterface): Promise<UsageRead> {
+  const read: UsageRead = { context: undefined, five: undefined, seven: undefined, cost: undefined, errors: {} }
+  try {
+    const usage = await $.session.usage()
+    read.context = usage.context
+    for (const win of usage.rateLimits || []) {
+      if (win.kind === 'five_hour') read.five = win
+      if (win.kind === 'seven_day') read.seven = win
+    }
+    read.cost = usage.cost ? usage.cost.usd : undefined
+  } catch (err) {
+    for (const id of USAGE_IDS) read.errors[id] = String(err)
+  }
+  return read
+}
+
 async function gatherNouns($: EngineInterface): Promise<Snap> {
   const errors: Record<string, string> = {}
   try {
@@ -290,17 +311,9 @@ async function gatherNouns($: EngineInterface): Promise<Snap> {
   } catch (err) {
     errors['model'] = String(err)
   }
-  try {
-    const usage = await $.session.usage()
-    s.context = usage.context
-    for (const win of usage.rateLimits || []) {
-      if (win.kind === 'five_hour') s.five = win
-      if (win.kind === 'seven_day') s.seven = win
-    }
-    s.cost = usage.cost ? usage.cost.usd : undefined
-  } catch (err) {
-    for (const id of ['context', 'five-hour-limit', 'weekly-limit', 'cost']) errors[id] = String(err)
-  }
+  const { errors: usageErrors, ...figures } = await readUsage($)
+  Object.assign(s, figures)
+  Object.assign(errors, usageErrors)
   try {
     s.session = await $.session.id()
   } catch (err) {
@@ -466,9 +479,9 @@ function summary(p: Prefs): string {
 }
 
 // The scanner lets `$` travel only into a function declared at the top of the file,
-// so the refresh the hooks share lives here, not in register. Refreshes overlap (a
+// so the refreshes the hooks share live here, not in register. Refreshes overlap (a
 // step's can still be in flight when the turn completes) and need not finish in the
-// order they began: a gather older than the one on screen is dropped.
+// order they began: a read older than the one on screen is dropped.
 let refreshesBegun = 0
 let refreshShown = 0
 async function refresh($: EngineInterface, src: string): Promise<void> {
@@ -478,14 +491,36 @@ async function refresh($: EngineInterface, src: string): Promise<void> {
   refreshShown = ticket
   fresh.effort = effort
   snap = fresh
+  await redraw($)
+}
+
+// A model response moves only the usage figures, so once one has arrived the bar reads
+// those alone, one call where the whole gather makes several, and merges them into the
+// bar on screen when the read returns.
+async function refreshUsage($: EngineInterface, src: string): Promise<void> {
+  if (!snap) return refresh($, src)
+  const ticket = ++refreshesBegun
+  const t0 = now()
+  const read = await readUsage($)
+  timing.gather_ms.push(now() - t0)
+  timing.gather_src.push(src)
+  if (ticket < refreshShown || !snap) return
+  refreshShown = ticket
+  const errors = { ...snap.errors }
+  for (const id of USAGE_IDS) delete errors[id]
+  snap = { ...snap, ...read, errors: { ...errors, ...read.errors } }
+  await redraw($)
+}
+
+async function redraw($: EngineInterface): Promise<void> {
   const p = await loadPrefs($)
   $.ui.invalidate('ui.render')
-  if (cfg.pinStatus) $.ui.status(plainBar(build(snap, cfg.pal, p.ids)))
+  if (cfg.pinStatus && snap) $.ui.status(plainBar(build(snap, cfg.pal, p.ids)))
 }
 
 // A refresh a hook starts never fails the event it rides; the reason goes to the dump.
-function refreshQuietly($: EngineInterface, src: string): Promise<void> {
-  return refresh($, src).catch((err) => {
+function refreshQuietly($: EngineInterface, src: string, usageOnly = false): Promise<void> {
+  return (usageOnly ? refreshUsage($, src) : refresh($, src)).catch((err) => {
     timing.refresh_error = src + ': ' + errorText(err)
   })
 }
@@ -565,9 +600,11 @@ export function register(on: On, options: PluginOptions) {
   })
 
   // Effort is not on $.session; it rides every model request as turn.step's e.effort.
-  // Each main-loop request also refreshes the bar while it is in flight, so a model
-  // switch shows from the first request after it and context and cost follow the turn.
-  // A subagent's request names its own model and effort, not the session's.
+  // Each main-loop request refreshes the bar as it goes out, so a model switch shows
+  // from the first request after it, and reads the usage again once the response has
+  // arrived, so the context it was answered over, the rate limits and the cost show
+  // while its tools run, where the classic command showed them from its re-run on the
+  // new message. A subagent's request names its own model and effort, not the session's.
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) return yield* next(e)
     if (e.effort !== undefined && e.effort !== effort) {
@@ -577,16 +614,21 @@ export function register(on: On, options: PluginOptions) {
     const refreshed = refreshQuietly($, 'turn.step')
     const result = yield* next(e)
     await refreshed
+    await refreshQuietly($, 'turn.step.end', true)
     return result
   })
 
-  // The main loop's model changes between turns through /model or the model row of
-  // /config; the bar follows once the change has been made.
-  on('command.run', { command: 'model' }, async ($, e, next) => {
-    const result = await next(e)
-    await refreshQuietly($, 'command.run')
-    return result
-  })
+  // Between turns the main loop's model changes through /model or the model row of
+  // /config, /compact adds the cost of its own request (the context keeps the last
+  // response's figure, measured on 2.1.280), and /clear starts the context and the
+  // session over; the bar follows each once the change has been made.
+  for (const command of ['model', 'compact', 'clear']) {
+    on('command.run', { command }, async ($, e, next) => {
+      const result = await next(e)
+      await refreshQuietly($, 'command.run:' + command)
+      return result
+    })
+  }
 
   on('config.set', { key: 'model' }, async ($, e, next) => {
     const result = await next(e)

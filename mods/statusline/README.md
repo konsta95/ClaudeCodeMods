@@ -40,13 +40,17 @@ above the bar, which in the fullscreen UI is the prompt box's bottom rule, start
 the bar's first column. The card is placed out of the layout, so showing it moves
 nothing on screen.
 
-The bar is rebuilt after `session.start`, on every model request of the main loop
-(`turn.step`, while the request is in flight, so the request waits for nothing), after
-every `turn.complete`, after `/model` returns and after the model row of `/config` is
-written. A model switch therefore shows at the latest from the first request after it,
-and context and cost follow the turn instead of holding until it ends. A subagent's
-request changes nothing on the bar: it names its own model and effort, not the
-session's. Rebuilds overlap, and one that finishes after a newer one is dropped.
+The bar is rebuilt after `session.start`, as every model request of the main loop
+goes out (`turn.step`, while the request is in flight, so the request waits for
+nothing), after every `turn.complete`, after `/model`, `/compact` and `/clear` return,
+and after the model row of `/config` is written. Once each main-loop response has
+arrived, the bar reads the usage again, one call before the response's tools run, so
+the context the response was answered over, the rate limits and the cost show while
+those tools run. The classic command showed them at the same point, because Claude Code
+re-ran it on every new message. A model switch shows at the latest from the first
+request after it. A subagent's request changes nothing on the bar: it names its own
+model and effort, not the session's. Rebuilds overlap, and one that finishes after a
+newer one is dropped.
 
 ## /statusline-mod
 
@@ -92,6 +96,7 @@ with a fixed payload on 2026-09-21.
 | First render after `session.start` | 183 to 508 ms |
 | Cold gather of the nouns, twice at start | 120 to 318 ms |
 | Warm gather after a turn | 16 to 42 ms |
+| Usage read once a response has arrived | 0.53 and 0.73 ms, against 31.2 and 28.4 ms for the whole gathers as the same two requests went out (one Haiku 4.5 probe session) |
 | Render of the hint line | median 0.47 ms, 0.21 to 11.13 ms, across 21 renders |
 | Shell version, one `statusLine` spawn | 132.4 ms median of 30, with 122.0 and 137.1 ms in two other runs of 30 (bare `node` spawn 119.4 ms median of 30); paid on every status-line update, asynchronously and off the renderer's path, so not on the same clock as the render row |
 | Kit, one run from this repository | first mount 91.1 ms, 200 cached renders median 1.41 ms, p90 2.07 ms, max 12.1 ms |
@@ -119,6 +124,15 @@ pty, driven by `claude_live_probe`, two on this build and two on 0.2.0. After
 build redrew the context as `37K/200K` after the read and before the answer, where 0.2.0
 kept `0/200K` until the turn ended.
 
+The context during a response's tools, `/clear` and `/compact` were measured the same
+day in eight more such sessions, four on this build and four on 0.2.1. In a turn whose
+first response ran `sleep 20`, this build showed `42K/200K` and the cost for the whole
+sleep, where 0.2.1 showed `0/200K` until the next request went out. On forks of that
+conversation, `/clear` made this build show `0/200K` and the new session id, where 0.2.1
+kept `42K/200K` and the old id. After `/compact` both builds kept `42K/200K`, because the
+engine goes on reporting the last response's figure; this build showed the cost growing
+from $0.09 to $0.10 with the compaction's own request, and 0.2.1 kept $0.09.
+
 ## Limits
 
 - Hover is applied by the terminal surface. No hook runs when the pointer moves, so
@@ -132,6 +146,9 @@ kept `0/200K` until the turn ended.
   id that is not `claude-*` is shown as it came.
 - The effort level is unknown until the first `turn.step`. The `/config` rows are
   read once in case one carries it; in each measured session none of the 43 rows did.
+- After `/compact` the context keeps the figure of the last response until the next
+  one arrives, because that is the figure the engine reports (measured on 2.1.280). The
+  types describe it as the status line's own `total_input_tokens`.
 - A switch made in the `/model` picker was not observed live, because the probe types
   one line and cannot pick an entry. If `command.run` resolves before the pick, the bar
   keeps the old model until the next model request redraws it.
