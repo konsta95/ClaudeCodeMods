@@ -6,7 +6,7 @@
     {
       "name": "statusline",
       "source": "./mods/statusline",
-      "description": "ClaudeCodeStatusline as a function-hook mod: the status bar drawn in the band above the prompt, each segment revealing its details on hover."
+      "description": "ClaudeCodeStatusline as a function-hook mod: the status bar drawn in the hint line under the prompt, each segment revealing its details on hover, with /statusline-mod to pick the segments."
     },
     {
       "name": "hidevalues",

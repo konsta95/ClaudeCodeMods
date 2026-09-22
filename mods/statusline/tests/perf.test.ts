@@ -4,7 +4,8 @@ import { expect, test } from 'claude-code/testing'
 // statusLine command (one node process per update). Prints medians; asserts only that
 // the bar drew, so a slow box does not turn the timing into a red run.
 
-const PROPS = { hasSurvey: false, isWorking: false, maxRows: 8, bodyColumns: 120, scroll: { offset: 0, bodyRows: 7 }, view: {} }
+const PROPS = { isDraft: false, isWorking: false, hint: '? for shortcuts' }
+const VIEWPORT = { columns: 140, rows: 40, isFullscreen: true }
 const USAGE = {
   context: { tokens: 83000, window: 1000000, percent: 8 },
   rateLimits: [{ kind: 'five_hour', percentUsed: 25 }, { kind: 'seven_day', percentUsed: 61.5 }],
@@ -32,14 +33,14 @@ function median(xs: number[]): number {
 test('perf: first mount (gather via nouns + render) and 200 cached renders', async ($, on) => {
   mockSession(on)
   const t0 = performance.now()
-  const first = await $.ui.mount({ plugin: 'statusline', surface: 'terminal', component: 'AbovePrompt', props: PROPS, requestId: 'perf-0' })
+  const first = await $.ui.mount({ plugin: 'statusline', surface: 'terminal', component: 'PromptHint', props: PROPS, requestId: 'perf-0', viewport: VIEWPORT })
   const firstMs = performance.now() - t0
   expect(await first.find({ type: 'Text', text: '83K/1M' })).toBeDefined()
 
   const times: number[] = []
   for (let i = 1; i <= 200; i++) {
     const t = performance.now()
-    const ui = await $.ui.mount({ plugin: 'statusline', surface: 'terminal', component: 'AbovePrompt', props: PROPS, requestId: 'perf-' + i })
+    const ui = await $.ui.mount({ plugin: 'statusline', surface: 'terminal', component: 'PromptHint', props: PROPS, requestId: 'perf-' + i, viewport: VIEWPORT })
     await ui.drawn()
     times.push(performance.now() - t)
   }

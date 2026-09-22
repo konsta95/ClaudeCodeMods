@@ -7,24 +7,28 @@ listing all of them.
 
 | Mod | What it does | Verified |
 | --- | --- | --- |
-| [`statusline`](mods/statusline) | The [ClaudeCodeStatusline](https://github.com/konsta95/ClaudeCodeStatusline) bar as a function hook: drawn in the band above the prompt from the session's own nouns, each segment revealing its details on hover. | kit 11 of 11, strict typecheck clean, bar and hover of all seven segments observed live on this build |
-| [`hidevalues`](mods/hidevalues) | Hides high-entropy tokens and e-mail addresses in Bash tool rows until the pointer is over them. | kit 7 of 7, strict typecheck clean, hide and reveal observed live on this build; in the classic UI the hide draws and nothing reveals |
-| [`mod-settings`](mods/mod-settings) | `/mods`: a pane listing the mods' visible settings, with drafts, presets, reset and undo. | kit 35 of 35, strict typecheck clean, Apply and Undo observed live in two probe sessions; open limits in its README |
+| [`statusline`](mods/statusline) | The [ClaudeCodeStatusline](https://github.com/konsta95/ClaudeCodeStatusline) bar as a function hook: drawn in the hint line under the prompt, where the shell version drew, from the session's own nouns; each segment reveals its details on hover, and `/statusline-mod` opens a pane that picks the segments, their order and the scheme. | kit 20 of 20, strict typecheck clean, hover observed live on 2.1.280 as its README records |
+| [`hidevalues`](mods/hidevalues) | Hides high-entropy tokens and e-mail addresses in Bash tool rows until the pointer is over them. | kit 7 of 7, strict typecheck clean, hide and reveal observed live on 2.1.278; in the classic UI the hide draws and nothing reveals |
+| [`mod-settings`](mods/mod-settings) | `/mods`: a pane listing the mods' visible settings, with drafts, presets, reset and undo. | kit 37 of 37, strict typecheck clean, Apply and Undo observed live on 2.1.278 in two probe sessions; open limits in its README |
 
 ## Requirements
 
-- Claude Code 2.1.278, the version the mods were written and measured against.
-  Function hooks are early access and their API may change between releases without
-  notice; a later version may refuse or break a module.
+- Claude Code 2.1.280, the version the mods were last verified against: the kits,
+  `claude plugin validate` and the typecheck for all three, and the hover live for
+  `statusline`. The mods were written against 2.1.278. Function hooks are early access
+  and their API may change between releases without notice: in 2.1.280
+  `$.model.complete` began resolving a result object instead of a string, which broke
+  the pane of `mod-settings` 0.2.0 once Explain was pressed. A later version may refuse
+  or break a module.
 - Function hooks enabled: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the environment of
   the `claude` process. Without it no hooks module is loaded.
 - Hover needs the fullscreen terminal UI (`"tui": "fullscreen"` in `settings.json`)
   with mouse tracking; under tmux the pane needs `mouse on` (read from
-  `tmux show -g mouse`; the hover probes themselves ran outside tmux). Both mods draw
-  in the classic scrolling UI too (one session on 2026-09-22 with
-  `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`: the band and the hidden row were drawn),
-  but that UI requests no mouse tracking from the terminal, only focus events, so
-  nothing reveals there.
+  `tmux show -g mouse`; the probes wrote mouse reports straight into the session, so
+  none exercised tmux's own mouse handling). Both mods draw in the classic scrolling UI
+  too (sessions on 2026-09-22 with `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`: the
+  `statusline` bar and the `hidevalues` hide were drawn), but that UI requests no mouse
+  tracking from the terminal, only focus events, so nothing reveals there.
 
 ## Running a mod
 
@@ -64,7 +68,8 @@ Anthropic's and are not part of this repository, so the command names them:
       --skipLibCheck /path/to/claude-code.d.ts hooks/*.ts tests/*.ts
 
 The kit cannot move a pointer, so a hover test in it checks the tree the hook returns
-(the scopes, the hidden rows, and that a malformed hover tree is refused). The reveal
+(the scopes, the hidden elements a hover reveals, and that a malformed hover tree is
+refused). The reveal
 itself was observed in live sessions, as each mod's README records.
 
 ## Licence

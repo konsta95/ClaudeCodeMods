@@ -171,7 +171,7 @@ test('/mods set calls the engine once and prints a deny verbatim', async ($, on)
 test('/mods opens an Escape-closing pane and returns a table without writing', async ($, on) => {
   const w = world(on, [TOGGLE, CHOICE])
   const opened: unknown[] = []
-  on('ui.open', ($, e) => { opened.push(e); return { value: undefined } })
+  on('ui.open', ($, e) => { opened.push(e); return { value: { isPlaced: true as const } } })
   const result = await command($)
   expect(result.text).toContain(TOGGLE.key)
   expect(result.text).toContain(CHOICE.key)
@@ -282,10 +282,13 @@ test('a fresh session clears stale admission and draft state without listing row
   expect((w.persisted.get('settings.view.v1') as { draft: unknown }).draft).toEqual({})
 })
 
+// $.model.complete resolves a ModelCompleteResult from Claude Code 2.1.280 on, never a bare string.
+const USAGE = { input_tokens: 120, output_tokens: 12, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
 test('Explain sends the row and README to the model only on demand', async ($, on) => {
   const w = world(on, [TOGGLE])
   const prompts: string[] = []
-  on('model.complete', ($, e) => { prompts.push(e.prompt); return { value: 'This switch blocks the marker.' } })
+  on('model.complete', ($, e) => { prompts.push(e.prompt); return { value: { isAnswered: true as const, text: 'This switch blocks the marker.', usage: USAGE } } })
   const ui = await $.ui.mount(MOUNT)
   expect(prompts).toEqual([])
   await ui.press({ key: 'explain:' + TOGGLE.key })
@@ -295,6 +298,24 @@ test('Explain sends the row and README to the model only on demand', async ($, o
   expect(prompts[0]).toContain(TOGGLE.key)
   expect((await ui.find({ type: 'Markdown', key: 'explanation' }))?.text).toContain('This switch blocks')
   expect(w.writes).toEqual([])
+})
+
+test('an unanswered explanation says so and the pane still draws', async ($, on) => {
+  const w = world(on, [TOGGLE])
+  on('model.complete', () => ({ value: { isAnswered: false as const, reason: 'empty-reply' as const, usage: USAGE } }))
+  const ui = await $.ui.mount(MOUNT)
+  await ui.press({ key: 'explain:' + TOGGLE.key })
+  await w.clock.settle()
+  expect((await ui.find({ type: 'Markdown', key: 'explanation' }))?.text).toBe('No explanation (empty-reply).')
+  expect(await ui.find({ type: 'Button', key: 'apply' })).toBeDefined()
+})
+
+test('a view saved with a whole model result as its explanation still draws', async ($, on) => {
+  const saved = { draft: {}, errors: {}, focused: '', notice: '', explanation: { isAnswered: true, text: 'saved by 0.2.0 under 2.1.280', usage: USAGE } }
+  world(on, [TOGGLE], { store: { 'settings.view.v1': saved } })
+  const ui = await $.ui.mount(MOUNT)
+  expect(await ui.find({ type: 'Button', key: 'apply' })).toBeDefined()
+  expect(await ui.find({ type: 'Markdown', key: 'explanation' })).toBeUndefined()
 })
 
 test('quick preset asks through AskUserQuestion and applies the chosen values', async ($, on) => {

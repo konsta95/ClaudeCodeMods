@@ -1,7 +1,7 @@
 {
   "name": "statusline",
-  "version": "0.1.0",
-  "description": "ClaudeCodeStatusline as a function-hook mod: the status bar drawn in the band above the prompt, each segment revealing its details on hover.",
+  "version": "0.2.0",
+  "description": "ClaudeCodeStatusline as a function-hook mod: the status bar drawn in the hint line under the prompt, each segment revealing its details on hover, with /statusline-mod to pick the segments.",
   "author": { "name": "konsta95" },
   "userConfig": {
     "scheme": {
@@ -15,7 +15,7 @@
       "type": "boolean",
       "title": "Hover details",
       "default": true,
-      "description": "Draw a second row that shows the details of the segment under the mouse pointer. Needs the fullscreen terminal with mouse tracking."
+      "description": "Reveal the details of the segment under the mouse pointer on a card over the row above the bar. Needs the fullscreen terminal with mouse tracking."
     },
     "pin_status": {
       "type": "boolean",
