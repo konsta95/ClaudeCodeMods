@@ -22,7 +22,7 @@ test('trace cost: wall time per kit dispatch with the pane closed and open', { t
   mock.store(on, { 'settings.interactive.v1': true })
   on('config.list', () => ({ value: [] }))
   on('tool.call', () => ({ deny: 'timing fixture; no process runs' }))
-  on('ui.open', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('command.run', () => ({ text: 'no-trace baseline' }))
   const tool = () => $.tool.call({ tool: 'Bash', command: 'fixture', description: 'Timing fixture only' })
 

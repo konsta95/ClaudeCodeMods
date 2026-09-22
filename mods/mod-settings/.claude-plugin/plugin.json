@@ -1,6 +1,6 @@
 {
   "name": "mod-settings",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Draft and apply mod settings, with declared presets, undo and observed hook previews.",
   "author": { "name": "konsta95" },
   "userConfig": {
