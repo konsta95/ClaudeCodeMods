@@ -107,7 +107,7 @@ let cfg: Cfg = { schemeName: 'claude-code', pal: SCHEMES['claude-code'], mono: f
 // Wall-clock samples of the two costs the classic command pays per update as one
 // process spawn: the gather through the session nouns and the render of the line.
 // Read back by the PROBE_RUN dump; nothing here is drawn.
-type Timing = { started_at?: number; first_render_at?: number; gather_ms: number[]; gather_src: string[]; render_ms: number[]; config_keys?: string[]; config_list_calls: number; effort_seed?: string; effort_seed_error?: string; command_error?: string }
+type Timing = { started_at?: number; first_render_at?: number; gather_ms: number[]; gather_src: string[]; render_ms: number[]; config_keys?: string[]; config_list_calls: number; effort_seed?: string; effort_seed_error?: string; command_error?: string; refresh_error?: string }
 const timing: Timing = { gather_ms: [], gather_src: [], render_ms: [], config_list_calls: 0 }
 const now = (): number => (globalThis as any).performance?.now?.() ?? Date.now()
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -466,12 +466,28 @@ function summary(p: Prefs): string {
 }
 
 // The scanner lets `$` travel only into a function declared at the top of the file,
-// so the refresh shared by session.start and turn.complete lives here, not in register.
+// so the refresh the hooks share lives here, not in register. Refreshes overlap (a
+// step's can still be in flight when the turn completes) and need not finish in the
+// order they began: a gather older than the one on screen is dropped.
+let refreshesBegun = 0
+let refreshShown = 0
 async function refresh($: EngineInterface, src: string): Promise<void> {
-  snap = await gather($, src)
+  const ticket = ++refreshesBegun
+  const fresh = await gather($, src)
+  if (ticket < refreshShown) return
+  refreshShown = ticket
+  fresh.effort = effort
+  snap = fresh
   const p = await loadPrefs($)
   $.ui.invalidate('ui.render')
   if (cfg.pinStatus) $.ui.status(plainBar(build(snap, cfg.pal, p.ids)))
+}
+
+// A refresh a hook starts never fails the event it rides; the reason goes to the dump.
+function refreshQuietly($: EngineInterface, src: string): Promise<void> {
+  return refresh($, src).catch((err) => {
+    timing.refresh_error = src + ': ' + errorText(err)
+  })
 }
 
 // Pane presses run one after another; a failure becomes a toast, never a lost pane.
@@ -537,6 +553,7 @@ export function register(on: On, options: PluginOptions) {
             config_list_calls: timing.config_list_calls,
             effort_seed_error: timing.effort_seed_error ?? null,
             command_error: timing.command_error ?? null,
+            refresh_error: timing.refresh_error ?? null,
             first_render_after_start_ms: timing.started_at !== undefined && timing.first_render_at !== undefined ? timing.first_render_at - timing.started_at : null,
             config_keys: timing.config_keys ?? null,
             effort_seed: timing.effort_seed ?? null,
@@ -548,12 +565,33 @@ export function register(on: On, options: PluginOptions) {
   })
 
   // Effort is not on $.session; it rides every model request as turn.step's e.effort.
+  // Each main-loop request also refreshes the bar while it is in flight, so a model
+  // switch shows from the first request after it and context and cost follow the turn.
+  // A subagent's request names its own model and effort, not the session's.
   on('turn.step', async function* ($, e, next) {
+    if (e.agentId !== undefined) return yield* next(e)
     if (e.effort !== undefined && e.effort !== effort) {
       effort = e.effort
       if (snap) snap.effort = effort
     }
-    return yield* next(e)
+    const refreshed = refreshQuietly($, 'turn.step')
+    const result = yield* next(e)
+    await refreshed
+    return result
+  })
+
+  // The main loop's model changes between turns through /model or the model row of
+  // /config; the bar follows once the change has been made.
+  on('command.run', { command: 'model' }, async ($, e, next) => {
+    const result = await next(e)
+    await refreshQuietly($, 'command.run')
+    return result
+  })
+
+  on('config.set', { key: 'model' }, async ($, e, next) => {
+    const result = await next(e)
+    await refreshQuietly($, 'config.set')
+    return result
   })
 
   // The bar, in the hint line under the prompt. Revealing a detail moves nothing: a

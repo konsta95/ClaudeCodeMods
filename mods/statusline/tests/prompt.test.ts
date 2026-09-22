@@ -391,6 +391,125 @@ test('an option with no /config row is refused with a toast, not a throw', async
   expect(w.toasts[0]).toContain('no /config row for details')
 })
 
+const STEP = { turnId: 'turn-1', index: 0, messageCount: 1 }
+const STEP_RESULT = { turnId: 'turn-1', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+// Beneath the plugin, a model request that answers at once with an empty response.
+const ANSWER = {
+  'turn.step': async function* () {
+    return { ...STEP_RESULT }
+  },
+}
+const modelCommand = ($: Engine) =>
+  $.command.run({ command: 'model', args: 'opus', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 140 } })
+
+// Reads a model request through to its end, the way the engine consumes the stream.
+async function step($: Engine, input: Record<string, unknown>) {
+  const stream = $.turn.step({ ...STEP, ...input } as any)
+  for await (const _chunk of stream) {
+    // the chunks are the model's, nothing here reads them
+  }
+  return stream.result
+}
+
+test('a model switch shows from the first main-loop request, before the turn completes', async ($, on) => {
+  let model = 'claude-fable-5-1'
+  world(on, { ...ANSWER, 'session.model': () => ({ value: model }) })
+  await start($)
+  expect(barText(walk(await (await $.ui.mount(MOUNT)).drawn()))).toContain('Fable5.1')
+
+  model = 'claude-opus-5-5[1m]'
+  await step($, { model: 'claude-opus-5-5', effort: 'max' })
+
+  const during = barText(walk(await (await $.ui.mount({ ...MOUNT, requestId: 'during-turn' })).drawn()))
+  expect(during).toContain('Opus5.5 max')
+  expect(during).not.toContain('Fable')
+})
+
+test('a subagent request leaves the model and effort on the bar alone', async ($, on) => {
+  world(on, ANSWER)
+  await start($)
+
+  await step($, { model: 'claude-fable-5-1', effort: 'max' })
+  await step($, { model: 'claude-haiku-4-5-20251001', effort: 'low', agentId: 'agent-1' })
+
+  const bar = barText(walk(await (await $.ui.mount(MOUNT)).drawn()))
+  expect(bar).toContain('Fable5.1 max')
+  expect(bar).not.toContain('low')
+  expect(bar).not.toContain('Haiku')
+})
+
+test('/model redraws the bar with the new model once the command has run', async ($, on) => {
+  let model = 'claude-fable-5-1'
+  world(on, {
+    'session.model': () => ({ value: model }),
+    'command.run': (_$: any, e: any) => {
+      if (e.command === 'model') model = 'claude-opus-5-5[1m]'
+      return { text: 'Set model to Opus 5.5 (1M context)' }
+    },
+  })
+  await start($)
+
+  const result = await modelCommand($)
+
+  expect(result.text).toBe('Set model to Opus 5.5 (1M context)')
+  expect(barText(walk(await (await $.ui.mount(MOUNT)).drawn()))).toContain('Opus5.5')
+})
+
+test('a change to the model row of /config redraws the bar once it is written', async ($, on) => {
+  let model = 'claude-fable-5-1'
+  world(on, {
+    'session.model': () => ({ value: model }),
+    'config.set': (_$: any, e: any) => {
+      if (e.key === 'model') model = String(e.value)
+      return { value: e.value }
+    },
+  })
+  await start($)
+
+  await $.config.set({ key: 'model', value: 'claude-opus-5-5[1m]', previous: 'claude-fable-5-1', provider: { plugin: 'engine', tier: 'core' }, origin: { kind: 'composer' } })
+
+  expect(barText(walk(await (await $.ui.mount(MOUNT)).drawn()))).toContain('Opus5.5')
+})
+
+test('a refresh that finishes after a newer one does not put the older model back', async ($, on) => {
+  let model = 'claude-fable-5-1'
+  let reads = 0
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  let markHeld!: () => void
+  const heldStarted = new Promise<void>((resolve) => (markHeld = resolve))
+  world(on, {
+    ...ANSWER,
+    // The second read of the model is the step's: it sees the old model and is held
+    // until the refresh after /model has drawn the new one.
+    'session.model': async () => {
+      reads += 1
+      const seen = model
+      if (reads === 2) {
+        markHeld()
+        await held
+      }
+      return { value: seen }
+    },
+    'command.run': (_$: any, e: any) => {
+      if (e.command === 'model') model = 'claude-opus-5-5[1m]'
+      return { text: 'Set model to Opus 5.5 (1M context)' }
+    },
+  })
+  await start($)
+
+  const stepDone = step($, { model: 'claude-fable-5-1', effort: 'max' })
+  await heldStarted
+  await modelCommand($)
+  release()
+  await stepDone
+
+  expect(reads).toBe(3)
+  const bar = barText(walk(await (await $.ui.mount(MOUNT)).drawn()))
+  expect(bar).toContain('Opus5.5')
+  expect(bar).not.toContain('Fable')
+})
+
 const BAD_HOVER = {
   name: 'bad-hover',
   register(on: any) {

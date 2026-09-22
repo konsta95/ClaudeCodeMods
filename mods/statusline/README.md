@@ -24,7 +24,7 @@ Code draws its own pills, such as the permission mode, to the left of the bar.
 | directory | no | the name of the current directory | the full path |
 | branch | no | the branch alone | the branch and its repository |
 | github | no | `owner/name` from the GitHub remote | the same |
-| model | yes | the display name derived from the model id with its spaces removed, as the shell version prints it (`claude-opus-5-5[1m]` reads `Opus5.5`), then the effort level once a `turn.step` has carried one | the model id and the effort level |
+| model | yes | the display name derived from the model id with its spaces removed, as the shell version prints it (`claude-opus-5-5[1m]` reads `Opus5.5`), then the effort level once a main-loop `turn.step` has carried one | the model id and the effort level |
 | context | yes | `used/window` tokens, coloured by the percentage used | the token count and the percentage |
 | 5h | yes | percentage of the five-hour window used | the exact percentage and when it resets |
 | 7d | yes | percentage of the seven-day window used | the same for the weekly window |
@@ -40,8 +40,13 @@ above the bar, which in the fullscreen UI is the prompt box's bottom rule, start
 the bar's first column. The card is placed out of the layout, so showing it moves
 nothing on screen.
 
-The bar is rebuilt after `session.start` and after every `turn.complete`; `turn.step`
-updates the effort level.
+The bar is rebuilt after `session.start`, on every model request of the main loop
+(`turn.step`, while the request is in flight, so the request waits for nothing), after
+every `turn.complete`, after `/model` returns and after the model row of `/config` is
+written. A model switch therefore shows at the latest from the first request after it,
+and context and cost follow the turn instead of holding until it ends. A subagent's
+request changes nothing on the bar: it names its own model and effort, not the
+session's. Rebuilds overlap, and one that finishes after a newer one is dropped.
 
 ## /statusline-mod
 
@@ -107,6 +112,13 @@ in the same line, but tmux reported no mouse mode enabled by Claude Code, where 
 fullscreen sessions had any-motion and SGR reporting on. No pointer position reaches
 the session there, so nothing reveals.
 
+The model switch was measured on 2026-09-22 in four Haiku 4.5 sessions in a 140 by 40
+pty, driven by `claude_live_probe`, two on this build and two on 0.2.0. After
+`/model sonnet` this build redrew the bar as `Sonnet5`, where 0.2.0 redrew it as
+`Haiku4.5`. In a turn of two model requests, a file read and then the answer, this
+build redrew the context as `37K/200K` after the read and before the answer, where 0.2.0
+kept `0/200K` until the turn ended.
+
 ## Limits
 
 - Hover is applied by the terminal surface. No hook runs when the pointer moves, so
@@ -120,6 +132,9 @@ the session there, so nothing reveals.
   id that is not `claude-*` is shown as it came.
 - The effort level is unknown until the first `turn.step`. The `/config` rows are
   read once in case one carries it; in each measured session none of the 43 rows did.
+- A switch made in the `/model` picker was not observed live, because the probe types
+  one line and cannot pick an entry. If `command.run` resolves before the pick, the bar
+  keeps the old model until the next model request redraws it.
 - `PROBE_RUN` in the environment makes `turn.complete` write a JSON timing dump, under
   `out/<PROBE_RUN>` unless `PROBE_OUT` names another directory. Both exist for
   measurement and are otherwise inert.
