@@ -35,8 +35,10 @@ Run it from a clone with
     CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir mods/hidevalues
 
 Hover needs the fullscreen terminal UI with mouse tracking. In the classic scrolling
-UI there is no pointer, so nothing would be revealed; the hide itself was only
-observed in the fullscreen UI.
+UI Claude Code requests no mouse tracking from the terminal (only focus events;
+measured 2026-09-22 with `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`), so nothing reveals
+there; the hide itself draws the same way in both UIs, the tool row rewritten with
+both values in the hide colour, one to a line, and the footer counting them.
 
 ## Measured
 
@@ -49,6 +51,17 @@ address behaved the same. In that terminal the engine raised `ToolUse` for the r
 never `ToolResult`, and a `ToolUse` rewrite replaces the whole row, header included,
 which is why the hook draws the header too. `ToolResult` stays in the matcher for the
 standalone-row case the declarations describe.
+
+Re-measured on the committed build (`d19c6295`) on 2026-09-22 with a pointer sweep over
+every row of a 40 by 140 fullscreen session (the estate's `claude_live_probe.py`):
+before the sweep the token and the address were each drawn once, in the hide colour on
+the hide colour, one to a line above the footer `2 hidden values, hover one to reveal
+it`; each was rewritten in the reveal colour with an underline when the pointer reached
+it and in the hide colour again when the pointer left. No other row of the tool output
+revealed a value: the four rows around them answered only by redrawing the footer, and
+the statusline mod loaded in the same session answered on its own bar row. In the
+classic scrolling UI the same rows were drawn hidden the same way and, with no mouse
+tracking requested, nothing was revealed.
 
 The kit passes 7 of 7: the entropy and span policy (including the `min_length` floor,
 which the first packaged build hardcoded at 20), the `ToolUse` and `ToolResult`

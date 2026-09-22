@@ -63,13 +63,22 @@ of the classic command with a fixed payload on 2026-09-21.
 | Shell version, one `statusLine` spawn | 132.4 ms median of 30, with 122.0 and 137.1 ms in two other runs of 30 (bare `node` spawn 119.4 ms median of 30); paid on every status-line update, asynchronously and off the renderer's path, so not on the same clock as the render row |
 | Kit, one run from this repository | first mount 76.8 ms (60.6 to 84.0 across earlier runs), 200 cached renders median 1.6 ms, p90 2.8 ms, max 13.9 ms |
 
-The hover reveal was observed live in the fullscreen UI on a 40 by 140 pseudo-terminal,
-on an earlier build of the module (`ad8b1cf2`; the rows above are from the committed
-build, `ae9bf239`): before the sweep the details row held only its prefix, and sweeping
-the pointer along the bar showed the detail of each of the three segments the bar
-carried before the first response, git branch, model and session, and nothing over a
-separator or past the bar's end. The other four segments were never hovered live; the
-kit checks that each names a scope and has a hidden row.
+The hover reveal was observed live on the committed build (`ae9bf239`) in the
+fullscreen UI on a 40 by 140 pseudo-terminal on 2026-09-22: one Haiku 4.5 session, one
+Bash turn so the bar carried all seven segments, then a pointer sweep over every screen
+row driven by the estate's `claude_live_probe.py`. Before the sweep the details row
+held only its prefix. Sweeping along the bar row changed the details row at columns 1,
+7, 17, 25, 33, 39 and 77, each time to the detail of the segment covering that column
+(git branch, model, context, 5h, 7d, session, cost); the segments begin at columns 1,
+7, 16, 25, 32, 39 and 76 and the sweep stepped two columns from 1, so three of those
+hovers landed one column inside their segment. No other row changed the details row:
+the six rows of the Bash tool output answered with a redraw by the hidevalues mod,
+loaded in the same session, and the remaining 33 rows sent nothing back at any of the
+nine columns sampled. With the pointer parked at the top-left corner afterwards no
+detail was shown. In the classic scrolling UI (`CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`,
+same day, same sweep) the bar is drawn but Claude Code requests no mouse tracking from
+the terminal (only focus events, mode 1004), so no pointer position reaches it and
+nothing reveals.
 
 ## Limits
 
