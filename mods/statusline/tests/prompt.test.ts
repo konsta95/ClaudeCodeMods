@@ -765,6 +765,32 @@ test('a refresh that leaves the bar as it was asks for no redraw; one that chang
   expect(barText(walk(await line.drawn()))).toContain('37K/200K')
 })
 
+// After a turn is interrupted, 2.1.280 answers the context with no count, which its
+// typings keep for a fresh or just-compacted window, while its classic status line
+// payload keeps the figure (both measured live).
+test('an interrupted turn keeps the context figure on the bar; a finished turn shows what the engine reports', async ($, on) => {
+  let context: Record<string, number> = { tokens: 37000, window: 200000 }
+  const w = world(on, {
+    ...ANSWER,
+    'session.usage': () => ({ value: { ...USAGE, context } }),
+    'turn.complete': (_$: any, e: any) => ({ text: e.answer }),
+  })
+  await start($)
+  const line = await $.ui.mount(MOUNT)
+  await step($, { model: 'claude-fable-5-1', effort: 'max' })
+  await w.clock.settle()
+  expect(barText(walk(await line.drawn()))).toContain('37K/200K')
+
+  context = { window: 200000 }
+  await $.turn.complete({ answer: '', durationMs: 5000, isAborted: true, turnId: 'turn-1', reason: 'aborted' } as any)
+  await w.clock.settle()
+  expect(barText(walk(await line.drawn()))).toContain('37K/200K')
+
+  await $.turn.complete({ answer: 'done', durationMs: 5000, isAborted: false, turnId: 'turn-2', reason: 'answer' } as any)
+  await w.clock.settle()
+  expect(barText(walk(await line.drawn()))).toContain('0/200K')
+})
+
 test('/clear redraws the bar with the new session and its empty context once the command has run', async ($, on) => {
   const NEW_ID = 'b7c3a1d2-0e4f-4a6b-8c9d-1f2e3a4b5c6d'
   let id = SESSION_ID

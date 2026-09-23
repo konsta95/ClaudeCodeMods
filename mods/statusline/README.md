@@ -192,6 +192,16 @@ the exact tokens or the cost to four places. Typing during a streamed turn drew 
 and 5 on this build: three at hint changes, one at a figure's change, and one at the
 turn's end with the bar unchanged, which the fixed-text hook drew too.
 
+The context after an interrupted turn was measured on 2026-09-23 in the same kind of
+Haiku 4.5 sessions, with every read the mod made traced. When Esc interrupted a turn,
+`turn.complete` came with `isAborted` true and the engine answered `$.session.usage()` with
+the window and no token count, 41 ms after the read at the step's end had 37,105; its
+typings keep a missing count for a fresh or just-compacted window. In the same situation
+the engine's classic status line payload kept `total_input_tokens` at 37,191. 0.3.0 and
+0.3.1 drew the missing count as `0/200K` until the next response, in 6 of 6 interrupted
+runs (three each) and none of 6 finished ones. This build keeps the figure on the bar after an interrupted turn: the
+next interrupted run kept `37K/200K` until the next prompt, as did a run left to finish.
+
 ## Limits
 
 - Hover is applied by the terminal surface. No hook runs when the pointer moves, so
@@ -235,3 +245,7 @@ turn's end with the bar unchanged, which the fixed-text hook drew too.
   https://github.com/anthropics/claude-code/issues/91870#issuecomment-5790602695.
 - A change to a hover card's figures alone still asks for a redraw, so the cards stay
   current, and costs that frame too.
+- After an interrupted turn the next request still shows `0/200K` until its response
+  arrives, since the engine has no count then either: the screen read 0.8 s after the prompt
+  was sent showed it, and the one 0.8 s later showed the new figure. A finished turn,
+  `/clear` and `/compact` show what the engine reports.

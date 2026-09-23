@@ -592,12 +592,19 @@ function summary(p: Prefs): string {
 // order they began: a read older than the one on screen is dropped.
 let refreshesBegun = 0
 let refreshShown = 0
-async function refresh($: EngineInterface, src: string): Promise<void> {
+async function refresh($: EngineInterface, src: string, keepContext = false): Promise<void> {
   const ticket = ++refreshesBegun
   const fresh = await gather($, src)
   if (ticket < refreshShown) return
   refreshShown = ticket
   fresh.effort = effort
+  // After an interrupted turn 2.1.280 answers the context with no count, which its typings
+  // keep for a fresh or just-compacted window, while its classic status line payload keeps
+  // the figure (measured live), so the figure on the bar stays until the next response.
+  const kept = snap?.context
+  if (keepContext && fresh.context && fresh.context.tokens === undefined && kept?.tokens !== undefined) {
+    fresh.context = { ...fresh.context, tokens: kept.tokens, percent: kept.percent }
+  }
   snap = fresh
   await redraw($)
 }
@@ -678,7 +685,7 @@ export function register(on: On, options: PluginOptions) {
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
-    await refresh($, 'turn.complete')
+    await refresh($, 'turn.complete', e.isAborted === true)
     const run = await $.env.get('PROBE_RUN')
     if (run && snap) {
       const outDir = (await $.env.get('PROBE_OUT')) || 'out/' + run
