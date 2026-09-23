@@ -174,6 +174,24 @@ the element where the band shows it before the redraw a press asked for, so the 
 draws the segment the focus was on under a key no drawing had yet, which the engine
 waits for (13 ms in a probe), and the focus lands on the redrawn row.
 
+The line under the prompt was recorded frame by frame on 2026-09-22 and 2026-09-23, in
+Haiku 4.5 sessions on a 280 by 69 pty whose output was replayed through a terminal
+emulator. Each time Claude Code 2.1.280 dispatches a hooked hint line again, for a change
+of its props or a redraw the plugin asked for, one frame draws the engine's own hint row
+with the bar drawn last on the row below it, pushing the prompt up a row, before the new
+answer puts the bar back beside the pill: a copy of the bar one row down, for one frame.
+In a turn of six tool calls, a session with no hook on the line drew no such frame in two
+runs, and a hook drawing fixed text that never asked for a redraw drew one at each change
+of the engine's hint, among them the first key typed into the empty prompt during a
+streamed turn. 0.3.0 asked for a redraw after every refresh, two per model request, and
+the six-tool turn drew 16, 8 of them with nothing on the bar changed. This build asks only
+when what the bar draws has changed: the same turn drew 7 in a copy carrying the change
+and 9 on this build. The 2 in the second changed no cell of the bar, and without the mod's
+redraws that turn drew none mid-turn, so by elimination they were a hover card's figures,
+the exact tokens or the cost to four places. Typing during a streamed turn drew 6 on 0.3.0
+and 5 on this build: three at hint changes, one at a figure's change, and one at the
+turn's end with the bar unchanged, which the fixed-text hook drew too.
+
 ## Limits
 
 - Hover is applied by the terminal surface. No hook runs when the pointer moves, so
@@ -210,3 +228,10 @@ waits for (13 ms in a probe), and the focus lands on the redrawn row.
   segment is drawn under a new key; the focus landing on it was observed live.
 - The typings say a tree taller than the band scrolls and arms no digit. At 100
   columns the grid needs six rows, eight with the footer, and a shorter band scrolls it.
+- Each change of the engine's hint still shows the copy of the bar one row down for a
+  frame: the first key typed into the empty prompt during a turn, sending a prompt, and
+  the turn's end. A hook cannot avoid it, since one drawing fixed text shows it too; only
+  Claude Code can. It is reported on the mods feedback thread,
+  https://github.com/anthropics/claude-code/issues/91870#issuecomment-5790602695.
+- A change to a hover card's figures alone still asks for a redraw, so the cards stay
+  current, and costs that frame too.

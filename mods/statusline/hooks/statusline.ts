@@ -620,8 +620,16 @@ async function refreshUsage($: EngineInterface, src: string): Promise<void> {
   await redraw($)
 }
 
+// Each redraw asked for costs a frame: until the hint line's new answer lands, 2.1.280
+// draws its own hint row stacked over the bar drawn last, a copy of the bar one row
+// down (measured live). So a refresh asks only when what the bar draws has changed,
+// against what the hint-line hook last drew.
+let drawnKey: string | undefined
 async function redraw($: EngineInterface): Promise<void> {
   const p = await loadPrefs($)
+  const key = snap ? JSON.stringify(build(snap, cfg.pal, p.ids)) : undefined
+  if (key !== undefined && key === drawnKey) return
+  drawnKey = key
   $.ui.invalidate('ui.render')
   if (cfg.pinStatus && snap) $.ui.status(plainBar(build(snap, cfg.pal, p.ids)))
 }
@@ -755,6 +763,7 @@ export function register(on: On, options: PluginOptions) {
     const t0 = now()
     if (timing.first_render_at === undefined) timing.first_render_at = t0
     const segs = build(snap, cfg.pal, ids)
+    drawnKey = JSON.stringify(segs)
     if (!segs.length) return next(e)
     const { Box, Text } = await $.ui.resolve(e)
     const { pal, mono, details } = cfg

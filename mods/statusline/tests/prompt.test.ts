@@ -732,6 +732,39 @@ test('the context follows each main-loop response while its tools run, before th
   expect(whileToolsRun).toContain('37K/200K')
 })
 
+// Every redraw the plugin asks for is a frame in which 2.1.280 draws its own hint row
+// stacked over the bar (measured live), so a refresh that finds the bar as it was asks
+// for none, and one that changes it still asks.
+test('a refresh that leaves the bar as it was asks for no redraw; one that changes it asks once', async ($, on) => {
+  let context: Record<string, number> = { tokens: 12000, window: 200000 }
+  const redraws: string[] = []
+  const w = world(on, {
+    ...ANSWER,
+    'session.usage': () => ({ value: { ...USAGE, context } }),
+    'ui.invalidate': (_$: any, e: any, next: any) => {
+      redraws.push(e.event)
+      return next(e)
+    },
+  })
+  await start($)
+  const line = await $.ui.mount(MOUNT)
+  await step($, { model: 'claude-fable-5-1', effort: 'max' })
+  await w.clock.settle()
+  expect(barText(walk(await line.drawn()))).toContain('Fable5.1 max')
+  redraws.length = 0
+
+  await step($, { model: 'claude-fable-5-1', effort: 'max' })
+  await w.clock.settle()
+  expect(redraws).toEqual([])
+  expect(barText(walk(await line.drawn()))).toContain('12K/200K')
+
+  context = { tokens: 37000, window: 200000 }
+  await step($, { model: 'claude-fable-5-1', effort: 'max' })
+  await w.clock.settle()
+  expect(redraws).toEqual(['ui.render'])
+  expect(barText(walk(await line.drawn()))).toContain('37K/200K')
+})
+
 test('/clear redraws the bar with the new session and its empty context once the command has run', async ($, on) => {
   const NEW_ID = 'b7c3a1d2-0e4f-4a6b-8c9d-1f2e3a4b5c6d'
   let id = SESSION_ID
