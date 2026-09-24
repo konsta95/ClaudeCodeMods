@@ -12,6 +12,7 @@ import type { EngineInterface, On, PluginOptions, RenderChildren } from 'claude-
 const COMMAND = 'statusline-mod'
 const PREFS = 'statusline.prefs.v1'
 const PICKER = 'statusline.picker.v1'
+const CONTEXT = 'statusline.context.v1:'
 const SEGMENT_KEY = 'segment:'
 
 type Pal = {
@@ -124,7 +125,7 @@ let cfg: Cfg = { schemeName: 'claude-code', pal: SCHEMES['claude-code'], mono: f
 // Wall-clock samples of the two costs the classic command pays per update as one
 // process spawn: the gather through the session nouns and the render of the line.
 // Read back by the PROBE_RUN dump; nothing here is drawn.
-type Timing = { started_at?: number; first_render_at?: number; gather_ms: number[]; gather_src: string[]; render_ms: number[]; config_keys?: string[]; config_list_calls: number; effort_seed?: string; effort_seed_error?: string; command_error?: string; refresh_error?: string }
+type Timing = { started_at?: number; first_render_at?: number; gather_ms: number[]; gather_src: string[]; render_ms: number[]; config_keys?: string[]; config_list_calls: number; effort_seed?: string; effort_seed_error?: string; command_error?: string; refresh_error?: string; context_store_error?: string }
 const timing: Timing = { gather_ms: [], gather_src: [], render_ms: [], config_list_calls: 0 }
 const now = (): number => (globalThis as any).performance?.now?.() ?? Date.now()
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -268,6 +269,9 @@ async function gather($: EngineInterface, src: string): Promise<Snap> {
 type UsageRead = Pick<Snap, 'context' | 'five' | 'seven' | 'cost' | 'errors'>
 const USAGE_IDS = ['context', 'five-hour-limit', 'weekly-limit', 'cost']
 async function readUsage($: EngineInterface): Promise<UsageRead> {
+  const ticket = ++usageReadsBegun
+  const epoch = contextEpoch
+  const session = contextSession
   const read: UsageRead = { context: undefined, five: undefined, seven: undefined, cost: undefined, errors: {} }
   try {
     const usage = await $.session.usage()
@@ -279,6 +283,10 @@ async function readUsage($: EngineInterface): Promise<UsageRead> {
     read.cost = usage.cost ? usage.cost.usd : undefined
   } catch (err) {
     for (const id of USAGE_IDS) read.errors[id] = String(err)
+  }
+  if (contextSuppressed && epoch === contextEpoch && session === contextSession &&
+      (!displayUsage || displayUsage.epoch !== epoch || ticket > displayUsage.ticket)) {
+    displayUsage = { read, epoch, session, ticket }
   }
   return read
 }
@@ -449,7 +457,8 @@ async function applyIds($: EngineInterface, ids: string[]): Promise<void> {
   prefs = { ids }
   await $.store.set(PREFS, prefs)
   $.ui.invalidate('ui.render')
-  if (cfg.pinStatus && snap) $.ui.status(plainBar(build(snap, cfg.pal, ids)))
+  const shown = await hintSnapshot($)
+  if (shown) pin($, build(shown, cfg.pal, ids))
 }
 
 async function toggleId($: EngineInterface, id: string): Promise<void> {
@@ -491,6 +500,8 @@ async function setPicker($: EngineInterface, open: boolean): Promise<void> {
     focusedId = undefined
     ringOn = undefined
     followed = undefined
+    previewDrawnKey = undefined
+    previewRequestedKey = undefined
   }
   $.ui.invalidate('ui.render')
   if (open) await $.store.set(PICKER, { session: await $.session.id() })
@@ -592,26 +603,178 @@ function summary(p: Prefs): string {
 // order they began: a read older than the one on screen is dropped.
 let refreshesBegun = 0
 let refreshShown = 0
-async function refresh($: EngineInterface, src: string, keepContext = false): Promise<void> {
+// A missing count must not erase the last engine count, including across reloads.
+// Retention belongs to this session; resets and a new session discard it (owner
+// decisions ea86a12483a1 and e6db480bbe63). The bar must not depend on a store write
+// succeeding (owner changes-1 brief).
+type RememberedContext = { session: string; tokens: number }
+type StoredContext = { session: string; tokens: number | null; failed?: true }
+let lastContext: RememberedContext | undefined
+let unidentifiedContext: { session: string | undefined; tokens: number } | undefined
+let contextSession: string | undefined
+let contextLoaded = false
+let contextRead: Promise<StoredContext | undefined> | undefined
+let contextReadSession: string | undefined
+let contextWrites: Promise<void> = Promise.resolve()
+let contextResetPending = false
+let contextSuppressed = false
+let endedSession: string | undefined
+let contextEpoch = 0
+let usageReadsBegun = 0
+let displayUsage: { read: UsageRead; epoch: number; session: string | undefined; ticket: number } | undefined
+type ContextWrite = { tokens: number | null | undefined; pending: boolean; saved: boolean }
+const contextTargets = new Map<string, ContextWrite>()
+
+async function readStoredContext($: EngineInterface, session: string): Promise<StoredContext | undefined> {
+  try {
+    const tokens = await $.store.get(CONTEXT + session)
+    if (tokens === null || (typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0)) return { session, tokens }
+  } catch (err) {
+    timing.context_store_error = 'read: ' + errorText(err)
+    return { session, tokens: null, failed: true }
+  }
+}
+
+// Preserve write order so a slow save cannot overtake a later reset. Drawing never
+// waits for this queue; a failed write leaves in-memory retention usable.
+function writeContext($: EngineInterface, before: Promise<void>, session: string, tokens?: number | null): Promise<void> {
+  let target = contextTargets.get(session)
+  if (!target || target.tokens !== tokens) {
+    target = { tokens, pending: false, saved: false }
+    contextTargets.set(session, target)
+  }
+  if (target.pending || target.saved) return before
+  const wanted = target
+  wanted.pending = true
+  return before.then(async () => {
+    try {
+      if (contextTargets.get(session) !== wanted) return
+      if (tokens === undefined) await $.store.delete(CONTEXT + session)
+      else await $.store.set(CONTEXT + session, tokens)
+      wanted.saved = true
+    } catch (err) {
+      timing.context_store_error = 'write: ' + errorText(err)
+      if (tokens === null) {
+        try { await $.store.delete(CONTEXT + session) }
+        catch (failure) { timing.context_store_error += '; reset invalidation: ' + errorText(failure) }
+      }
+    } finally {
+      wanted.pending = false
+    }
+  })
+}
+
+function displayRememberedContext(fresh: Snap): Snap {
+  const context = fresh.context
+  const remembered = unidentifiedContext ?? lastContext
+  if (!contextSuppressed && !fresh.errors.context && context?.tokens === undefined && context && remembered) {
+    fresh.context = { ...context, tokens: remembered.tokens, percent: (remembered.tokens / context.window) * 100 }
+  }
+  return fresh
+}
+
+function retainContext($: EngineInterface, fresh: Snap, restored?: StoredContext, hydrated = false): Snap {
+  if (fresh.errors.session || !fresh.session) {
+    if (!contextSuppressed && !fresh.errors.context && Number.isFinite(fresh.context?.tokens)) {
+      unidentifiedContext = { session: contextSession, tokens: fresh.context!.tokens as number }
+    }
+    return displayRememberedContext(fresh)
+  }
+  const session = fresh.session
+  if (endedSession === session) return fresh
+  const recovered = unidentifiedContext?.session === session ? unidentifiedContext : undefined
+  unidentifiedContext = undefined
+  if (contextSession && contextSession !== session) {
+    contextWrites = writeContext($, contextWrites, contextSession)
+    contextWrites = writeContext($, contextWrites, session)
+    contextLoaded = true
+    contextSuppressed = false
+    contextEpoch++
+  }
+  contextSession = session
+  if (lastContext?.session !== session) lastContext = undefined
+  if (!contextLoaded && hydrated) {
+    contextLoaded = restored?.failed !== true
+    contextSuppressed = restored?.session === session && restored.tokens === null
+    if (restored?.session === session) {
+      if (restored.tokens !== null) lastContext = { session, tokens: restored.tokens }
+    }
+  }
+  if (contextResetPending) {
+    contextWrites = writeContext($, contextWrites, session, contextSuppressed ? null : undefined)
+    contextResetPending = false
+  }
+  const target = contextTargets.get(session)
+  if (target && !target.saved) contextWrites = writeContext($, contextWrites, session, target.tokens)
+  const context = fresh.context
+  if (contextSuppressed) {
+    if (contextLoaded) contextWrites = writeContext($, contextWrites, session, null)
+    return fresh
+  }
+  if (recovered) {
+    if (contextLoaded) {
+      lastContext = { session, tokens: recovered.tokens }
+      contextWrites = writeContext($, contextWrites, session, recovered.tokens)
+    } else unidentifiedContext = recovered
+  }
+  if (fresh.errors.context || !context) return fresh
+  if (Number.isFinite(context.tokens)) {
+    unidentifiedContext = undefined
+    contextWrites = writeContext($, contextWrites, session, context.tokens)
+    lastContext = { session, tokens: context.tokens as number }
+  }
+  return displayRememberedContext(fresh)
+}
+
+// A completed main-session compaction discards retention until a subsequent response
+// (owner decision d2c401e9dd45). Reported usage may still be drawn during that wait;
+// null persists the waiting state, never a count.
+function forgetContext($: EngineInterface, untilResponse = false): void {
+  lastContext = undefined
+  unidentifiedContext = undefined
+  contextEpoch++
+  contextSuppressed = untilResponse
+  if (!contextLoaded && contextReadSession && contextReadSession !== contextSession) contextWrites = writeContext($, contextWrites, contextReadSession, untilResponse ? null : undefined)
+  contextLoaded = true
+  if (contextSession) contextWrites = writeContext($, contextWrites, contextSession, untilResponse ? null : undefined)
+  else contextResetPending = true
+  // Reads begun before the reset cannot restore a discarded count.
+  refreshShown = ++refreshesBegun
+  if (snap?.context) snap = { ...snap, context: { window: snap.context.window } }
+}
+
+function contextResponseArrived($: EngineInterface): void {
+  if (!contextSuppressed) return
+  contextSuppressed = false
+  contextLoaded = true
+  if (contextSession) contextWrites = writeContext($, contextWrites, contextSession)
+}
+
+async function gatherLatest($: EngineInterface, src: string): Promise<void> {
   const ticket = ++refreshesBegun
   const fresh = await gather($, src)
   if (ticket < refreshShown) return
+  if (!contextLoaded && fresh.session && !fresh.errors.session && !contextRead) {
+    contextReadSession = fresh.session
+    contextRead = readStoredContext($, fresh.session)
+  }
+  const restored = !contextLoaded && fresh.session && !fresh.errors.session
+    ? await contextRead
+    : undefined
+  if (ticket < refreshShown) return
+  if (restored?.failed) { contextRead = undefined; contextReadSession = undefined }
   refreshShown = ticket
   fresh.effort = effort
-  // After an interrupted turn 2.1.280 answers the context with no count, which its typings
-  // keep for a fresh or just-compacted window, while its classic status line payload keeps
-  // the figure (measured live), so the figure on the bar stays until the next response.
-  const kept = snap?.context
-  if (keepContext && fresh.context && fresh.context.tokens === undefined && kept?.tokens !== undefined) {
-    fresh.context = { ...fresh.context, tokens: kept.tokens, percent: kept.percent }
-  }
-  snap = fresh
+  snap = retainContext($, fresh, restored, true)
+}
+
+async function refresh($: EngineInterface, src: string): Promise<void> {
+  await gatherLatest($, src)
   await redraw($)
 }
 
-// A model response moves only the usage figures, so once one has arrived the bar reads
-// those alone, one call where the whole gather makes several, and merges them into the
-// bar on screen when the read returns.
+// Between full gathers, response refreshes follow engine usage without relearning a
+// count discarded by a later reset (owner decision d2c401e9dd45).
 async function refreshUsage($: EngineInterface, src: string): Promise<void> {
   if (!snap) return refresh($, src)
   const ticket = ++refreshesBegun
@@ -623,22 +786,67 @@ async function refreshUsage($: EngineInterface, src: string): Promise<void> {
   refreshShown = ticket
   const errors = { ...snap.errors }
   for (const id of USAGE_IDS) delete errors[id]
-  snap = { ...snap, ...read, errors: { ...errors, ...read.errors } }
+  snap = retainContext($, { ...snap, ...read, errors: { ...errors, ...read.errors } })
   await redraw($)
 }
 
-// Each redraw asked for costs a frame: until the hint line's new answer lands, 2.1.280
-// draws its own hint row stacked over the bar drawn last, a copy of the bar one row
-// down (measured live). So a refresh asks only when what the bar draws has changed,
-// against what the hint-line hook last drew.
-let drawnKey: string | undefined
+// While retention waits after compaction or an unread initial store, drawing must
+// show current reported usage (owner decisions d2c401e9dd45 and changes-7 brief).
+// Drawing cannot discard a pending full refresh or revive pre-reset retention.
+async function hintSnapshot($: EngineInterface): Promise<Snap | null> {
+  if (snap && contextSuppressed) {
+    const t0 = now()
+    await readUsage($)
+    timing.gather_ms.push(now() - t0)
+    timing.gather_src.push('ui.render.compacted')
+  }
+  return displaySnapshot()
+}
+
+function displaySnapshot(): Snap | null {
+  if (!snap || !contextSuppressed || displayUsage?.epoch !== contextEpoch || displayUsage.session !== contextSession) return snap
+  const errors = { ...snap.errors }
+  for (const id of USAGE_IDS) delete errors[id]
+  return { ...snap, ...displayUsage.read, errors: { ...errors, ...displayUsage.read.errors } }
+}
+
+// Redraws can expose a frame with the engine hint stacked over the previous bar
+// (2.1.280). Compare the visible bar, including cards only while details are on.
+// Each component acknowledges only its own drawing; a pending invalidation is not a
+// drawing. The preview has no hover cards (owner revision-7 brief).
+let hintDrawnKey: string | undefined
+let hintRequestedKey: string | undefined
+let previewDrawnKey: string | undefined
+let previewRequestedKey: string | undefined
+let pinnedText: string | undefined
+function drawingKey(segs: Seg[], details = cfg.details): string {
+  return JSON.stringify(details ? segs : segs.map(({ detail, ...visible }) => visible))
+}
+
+// The pin must use current selections and accepted usage, regardless of which draw
+// or refresh finishes first (owner decisions 66abb5e1db3e and 8043462344bd).
+function pin($: EngineInterface, segs: Seg[]): void {
+  if (!cfg.pinStatus) return
+  const text = plainBar(segs)
+  if (text === pinnedText) return
+  $.ui.status(text)
+  pinnedText = text
+}
+
 async function redraw($: EngineInterface): Promise<void> {
   const p = await loadPrefs($)
-  const key = snap ? JSON.stringify(build(snap, cfg.pal, p.ids)) : undefined
-  if (key !== undefined && key === drawnKey) return
-  drawnKey = key
+  const shown = displaySnapshot()
+  if (!shown) return
+  const segs = build(shown, cfg.pal, p.ids)
+  pin($, segs)
+  const key = drawingKey(segs)
+  const previewKey = drawingKey(segs, false)
+  const hintNeedsDraw = key !== hintDrawnKey && key !== hintRequestedKey
+  const previewNeedsDraw = previewDrawnKey !== undefined && previewKey !== previewDrawnKey && previewKey !== previewRequestedKey
+  if (!hintNeedsDraw && !previewNeedsDraw) return
+  hintRequestedKey = key
+  if (previewDrawnKey !== undefined) previewRequestedKey = previewKey
   $.ui.invalidate('ui.render')
-  if (cfg.pinStatus && snap) $.ui.status(plainBar(build(snap, cfg.pal, p.ids)))
 }
 
 // A refresh a hook starts never fails the event it rides; the reason goes to the dump.
@@ -683,9 +891,31 @@ export function register(on: On, options: PluginOptions) {
     return started
   })
 
+  on('session.end', async ($, e, next) => {
+    endedSession = e.sessionId
+    forgetContext($)
+    // A later compaction belongs to the next active conversation, even before its
+    // id is available; the ended session must stay retired (changes-7 brief).
+    if (contextSession === e.sessionId) {
+      contextSession = undefined
+      contextResetPending = true
+    }
+    contextWrites = writeContext($, contextWrites, e.sessionId)
+    const cleanup = contextWrites
+    // The shared exit budget covers downstream too; persistence is best effort.
+    const result = await next(e)
+    const remaining = Math.min(1500, next.budget.remainingMs)
+    const completed = await Promise.race([
+      cleanup.then(() => true),
+      $.clock.sleep(Math.max(0, remaining / 2), { signal: next.signal }).then(() => false, () => false),
+    ])
+    if (!completed) timing.context_store_error = 'end: cleanup did not finish within the remaining wait budget'
+    return result
+  })
+
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
-    await refresh($, 'turn.complete', e.isAborted === true)
+    await refresh($, 'turn.complete')
     const run = await $.env.get('PROBE_RUN')
     if (run && snap) {
       const outDir = (await $.env.get('PROBE_OUT')) || 'out/' + run
@@ -700,7 +930,7 @@ export function register(on: On, options: PluginOptions) {
           snap,
           effort,
           ids: p.ids,
-          bar: plainBar(build(snap, cfg.pal, p.ids)),
+          bar: plainBar(build(displaySnapshot() || snap, cfg.pal, p.ids)),
           scheme: cfg.schemeName,
           details: cfg.details,
           pinStatus: cfg.pinStatus,
@@ -712,6 +942,7 @@ export function register(on: On, options: PluginOptions) {
             effort_seed_error: timing.effort_seed_error ?? null,
             command_error: timing.command_error ?? null,
             refresh_error: timing.refresh_error ?? null,
+            context_store_error: timing.context_store_error ?? null,
             first_render_after_start_ms: timing.started_at !== undefined && timing.first_render_at !== undefined ? timing.first_render_at - timing.started_at : null,
             config_keys: timing.config_keys ?? null,
             effort_seed: timing.effort_seed ?? null,
@@ -726,8 +957,8 @@ export function register(on: On, options: PluginOptions) {
   // Each main-loop request refreshes the bar as it goes out, so a model switch shows
   // from the first request after it, and reads the usage again once the response has
   // arrived, so the context it was answered over, the rate limits and the cost show
-  // while its tools run, where the classic command showed them from its re-run on the
-  // new message. A subagent's request names its own model and effort, not the session's.
+  // while its tools run. A subagent's request names its own model and effort, not the
+  // session's.
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) return yield* next(e)
     if (e.effort !== undefined && e.effort !== effort) {
@@ -736,22 +967,33 @@ export function register(on: On, options: PluginOptions) {
     }
     const refreshed = refreshQuietly($, 'turn.step')
     const result = yield* next(e)
+    const responseEpoch = contextEpoch
     await refreshed
+    if (result.stopReason !== null && responseEpoch === contextEpoch) contextResponseArrived($)
     await refreshQuietly($, 'turn.step.end', true)
     return result
   })
 
   // Between turns the main loop's model changes through /model or the model row of
-  // /config, /compact adds the cost of its own request (the context keeps the last
-  // response's figure, measured on 2.1.280), and /clear starts the context and the
-  // session over; the bar follows each once the change has been made.
+  // /config, /compact adds the cost of its own request, and /clear starts the context
+  // and the session over; the bar follows each once the change has been made.
   for (const command of ['model', 'compact', 'clear']) {
     on('command.run', { command }, async ($, e, next) => {
       const result = await next(e)
+      if (command === 'clear' && result.ref !== undefined) forgetContext($)
       await refreshQuietly($, 'command.run:' + command)
       return result
     })
   }
+
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined) {
+      forgetContext($, true)
+      await refreshQuietly($, 'session.compact')
+    }
+    return result
+  })
 
   on('config.set', { key: 'model' }, async ($, e, next) => {
     const result = await next(e)
@@ -764,15 +1006,24 @@ export function register(on: On, options: PluginOptions) {
   // the bar from under the pointer (measured on 2.1.280), so details are cards out of
   // the flow, over the row above.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const ids = (await loadPrefs($)).ids
-    if (!ids.length) return next(e)
-    if (!snap) snap = await gather($, 'ui.render')
+    const loadedPrefs = await loadPrefs($)
+    if (!loadedPrefs.ids.length) {
+      hintDrawnKey = drawingKey([])
+      hintRequestedKey = undefined
+      return next(e)
+    }
+    if (!snap) await gatherLatest($, 'ui.render')
+    if (!snap) return next(e)
+    const { Box, Text } = await $.ui.resolve(e)
+    const shown = await hintSnapshot($)
+    if (!shown) return next(e)
     const t0 = now()
     if (timing.first_render_at === undefined) timing.first_render_at = t0
-    const segs = build(snap, cfg.pal, ids)
-    drawnKey = JSON.stringify(segs)
+    const segs = build(shown, cfg.pal, (prefs ?? loadedPrefs).ids)
+    hintDrawnKey = drawingKey(segs)
+    hintRequestedKey = undefined
+    pin($, segs)
     if (!segs.length) return next(e)
-    const { Box, Text } = await $.ui.resolve(e)
     const { pal, mono, details } = cfg
 
     const bar: RenderChildren[] = []
@@ -866,15 +1117,27 @@ export function register(on: On, options: PluginOptions) {
     try {
       await previous
       bandId = e.requestId
-      if (e.props.hasSurvey || !(await isPickerOpen($))) return next(e)
+      if (e.props.hasSurvey || !(await isPickerOpen($))) {
+        previewDrawnKey = undefined
+        previewRequestedKey = undefined
+        return next(e)
+      }
       const { Box, Text, Button } = await $.ui.resolve(e)
-      const p = await loadPrefs($)
-      if (!snap) snap = await gather($, 'ui.render')
+      const loadedPrefs = await loadPrefs($)
+      if (!snap) await gatherLatest($, 'ui.render')
+      if (!snap) return next(e)
+      const shown = await hintSnapshot($)
+      if (!shown) return next(e)
+      if (pickerOpen !== true) return next(e)
+      const p = prefs ?? loadedPrefs
       const { pal, mono, details, pinStatus, schemeName } = cfg
       const width = Math.max(20, e.props.bodyColumns)
 
       const title: RenderChildren[] = [Text({ children: 'Status line  ', bold: true, wrap: 'truncate' })]
-      const segs = build(snap, pal, p.ids)
+      const segs = build(shown, pal, p.ids)
+      previewDrawnKey = drawingKey(segs, false)
+      previewRequestedKey = undefined
+      pin($, segs)
       segs.forEach((seg, i) => {
         if (i) title.push(Text({ children: '|', color: pal.sep, dimColor: mono || !pal.sep, wrap: 'truncate' }))
         for (const piece of seg.pieces) title.push(Text({ children: piece.text, color: mono ? undefined : piece.color, dimColor: mono || seg.failed, wrap: 'truncate' }))

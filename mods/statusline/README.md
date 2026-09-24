@@ -43,14 +43,79 @@ nothing on screen.
 The bar is rebuilt after `session.start`, as every model request of the main loop
 goes out (`turn.step`, while the request is in flight, so the request waits for
 nothing), after every `turn.complete`, after `/model`, `/compact` and `/clear` return,
-and after the model row of `/config` is written. Once each main-loop response has
-arrived, the bar reads the usage again, one call before the response's tools run, so
+after a completed main-session compaction, and after the model row of `/config` is
+written. While retention is suppressed, hint and open-picker draws read usage again:
+this includes the post-compaction wait and uncertainty after a failed initial
+context-store read. The timing source `ui.render.compacted` names both cases. The
+first hint or picker draw also gathers session state if no
+snapshot exists. Once each main-loop response has
+arrived, the bar reads usage again before the response's tools run, so
 the context the response was answered over, the rate limits and the cost show while
-those tools run. The classic command showed them at the same point, because Claude Code
-re-ran it on every new message. A model switch shows at the latest from the first
+those tools run. A model switch shows at the latest from the first
 request after it. A subagent's request changes nothing on the bar: it names its own
 model and effort, not the session's. Rebuilds overlap, and one that finishes after a
 newer one is dropped.
+
+Whenever the engine omits a context count and the bar remembers one for this session,
+it keeps that count through later refreshes, including the next request. A new
+reported count replaces the remembered count.
+A change of context window keeps the count and recomputes the percentage for that
+window. A failed session-id read still learns and retains reported counts in memory,
+alongside `session!` when that segment is enabled; usage errors still draw `context!`.
+Those new counts are saved only after the same previously verified session id returns.
+A different id discards them. With no previously verified id, they remain display-only
+while the id is unavailable and are discarded when an id first verifies, even if
+usage still omits its count. The bar then uses that session's saved state or a newly
+reported count; without either it shows `0/window`.
+
+A completed main-session `session.compact` event discards the remembered count and
+prevents remembering another until a subsequent response arrives. During that wait,
+each draw of the hint or picker preview uses the engine's reported count, or
+`0/window` when it omits one. A component that has not redrawn can still display its
+pre-compaction count until its own next draw or a refresh, as described under Limits.
+The engine can also still report its old count when `/compact` returns. The
+waiting state survives a module reload when its marker was saved successfully. A
+compaction after the tracked session ends waits for the next verified session id
+before saving that session's marker. An earlier wait already bound to another
+session does not transfer across an unrelated session switch. Skipped compaction,
+precomputation that installs nothing, and a subagent's compaction
+do not reset the main bar. The built-in `/clear` and a change of session also discard
+the remembered count. A plugin that answers `/clear` without running the built-in
+command leaves retention intact.
+
+Rewind is a known limit in 0.3.3: the remembered count survives both slash-command
+and double-Esc rewind. If the engine omits its count after restoring the conversation,
+the bar can therefore show the count from before rewind. Rewind reset is deferred
+until a supported signal or a verified detector covers every required case.
+The message picker's **Summarize from here** and **Summarize up to here** also leave
+the remembered count intact. On 2.1.280 both bypass `session.compact`; their classic
+PostCompact event does not provide a verified main-session discriminator. A native
+subagent compaction emitted that event without an agent id and with the main
+session's transcript path. These actions can therefore leave the pre-summary count
+on the bar when usage omits its count.
+
+The remembered count is saved under the session's id in the plugin store and restored
+after a module reload, including an option change. Another session ignores it. Store
+writes are best effort and drawing does not wait for them. A failed save is retried
+on a later refresh, even when the count has not changed; a reload before a successful
+save can restore an older count. If the initial store read fails, the mod cannot know
+whether it holds a compaction marker. It shows reported usage without remembering
+it until a later successful read or a new response establishes retention. During
+that uncertainty, an omitted count can therefore display as zero.
+
+If saving a compaction marker fails, the mod tries to delete the obsolete saved
+count and retries the marker on later refreshes. Deletion alone cannot preserve the
+waiting state across reload: without a saved marker, a reload can learn a lingering
+engine count again. If deletion also fails, a reload can restore the discarded count.
+No persistence guarantee is possible while those store operations keep failing.
+
+The `session.end` hook forwards the chain promptly, queues deletion once after prior
+writes, and limits its wait for cleanup to part of the remaining shared end budget.
+The supplied 2.1.280 contract fires that hook on exit, `/clear`, resume, logout, a signal
+and the end of a `-p` run, with a default overall cleanup deadline of 1.5 seconds. If
+no end event runs, cleanup is interrupted or outlasts the wait, or deletion fails,
+the key can remain in the shared plugin store. This mod has no background collection
+of abandoned session keys.
 
 ## /statusline-mod
 
@@ -104,7 +169,7 @@ shell version, remove the `statusLine` entry from `settings.json`.
 
 ## Measured
 
-Claude Code 2.1.280, 2026-09-22. The mod rows come from three sessions, each on
+Claude Code 2.1.280, 2026-09-22. The live mod rows come from three sessions, each on
 Opus 5.5 in a 140 by 40 tmux pane with one short turn: two in the fullscreen UI and one
 in the classic UI. The shell row is three runs of 30 spawns of the classic command
 with a fixed payload on 2026-09-21.
@@ -118,7 +183,13 @@ with a fixed payload on 2026-09-21.
 | Usage read once a response has arrived | 0.53 and 0.73 ms, against 31.2 and 28.4 ms for the whole gathers as the same two requests went out (one Haiku 4.5 probe session) |
 | Render of the hint line | median 0.47 ms, 0.21 to 11.13 ms, across 21 renders |
 | Shell version, one `statusLine` spawn | 132.4 ms median of 30, with 122.0 and 137.1 ms in two other runs of 30 (bare `node` spawn 119.4 ms median of 30); paid on every status-line update, asynchronously and off the renderer's path, so not on the same clock as the render row |
-| Kit, one run from this repository | first mount 91.1 ms, 200 cached renders median 1.41 ms, p90 2.07 ms, max 12.1 ms |
+| Kit on 2.1.281, 0.3.3 hook `53e8e221…`, one run on 2026-09-24 | first mount 186.31 ms, 200 cached renders median 1.650 ms, p90 2.527 ms, max 11.535 ms; no usage reads during those cached renders |
+
+The kit timing uses an empty, working in-memory store. Its regression check requires
+the first mount to read usage and the cached draws not to read it again. Without
+that store fixture, the failed initial context read leaves retention suppressed:
+the same check observed 200 usage reads during 200 draws and failed. The timing
+figures describe this run; the test asserts the cached path, not a speed threshold.
 
 The hover reveal was observed in both fullscreen sessions. With all seven default
 segments on the bar, the pointer was moved to the middle of each segment by writing
@@ -148,9 +219,10 @@ day in eight more such sessions, four on this build and four on 0.2.1. In a turn
 first response ran `sleep 20`, this build showed `42K/200K` and the cost for the whole
 sleep, where 0.2.1 showed `0/200K` until the next request went out. On forks of that
 conversation, `/clear` made this build show `0/200K` and the new session id, where 0.2.1
-kept `42K/200K` and the old id. After `/compact` both builds kept `42K/200K`, because the
-engine goes on reporting the last response's figure; this build showed the cost growing
-from $0.09 to $0.10 with the compaction's own request, and 0.2.1 kept $0.09.
+kept `42K/200K` and the old id. In those `/compact` screen samples, both builds displayed
+`42K/200K`. This build showed the cost growing from $0.09 to $0.10; 0.2.1 kept $0.09.
+Those samples do not establish the count reported after the compacted transcript was
+installed.
 
 The picker was driven on 2026-09-22 in Haiku 4.5 sessions on a 280 by 69 pty, the
 owner's fullscreen layout, recording after each key the cells drawn inverted, which is
@@ -176,34 +248,242 @@ waits for (13 ms in a probe), and the focus lands on the redrawn row.
 
 The line under the prompt was recorded frame by frame on 2026-09-22 and 2026-09-23, in
 Haiku 4.5 sessions on a 280 by 69 pty whose output was replayed through a terminal
-emulator. Each time Claude Code 2.1.280 dispatches a hooked hint line again, for a change
-of its props or a redraw the plugin asked for, one frame draws the engine's own hint row
+emulator. At the observed hint changes and many redraws the plugin asked for, Claude
+Code 2.1.280 drew one frame with the engine's own hint row
 with the bar drawn last on the row below it, pushing the prompt up a row, before the new
 answer puts the bar back beside the pill: a copy of the bar one row down, for one frame.
 In a turn of six tool calls, a session with no hook on the line drew no such frame in two
 runs, and a hook drawing fixed text that never asked for a redraw drew one at each change
 of the engine's hint, among them the first key typed into the empty prompt during a
 streamed turn. 0.3.0 asked for a redraw after every refresh, two per model request, and
-the six-tool turn drew 16, 8 of them with nothing on the bar changed. This build asks only
-when what the bar draws has changed: the same turn drew 7 in a copy carrying the change
-and 9 on this build. The 2 in the second changed no cell of the bar, and without the mod's
-redraws that turn drew none mid-turn, so by elimination they were a hover card's figures,
+the six-tool turn drew 16, 8 of them with nothing on the bar changed. Version 0.3.1 began
+comparing the bar and its hover details before asking for a redraw: the same turn drew
+7 in a copy carrying the change and 9 on 0.3.1. The 2 in the second changed no cell of
+the bar, and without the mod's redraws that turn drew none mid-turn, so by elimination
+they were a hover card's figures,
 the exact tokens or the cost to four places. Typing during a streamed turn drew 6 on 0.3.0
-and 5 on this build: three at hint changes, one at a figure's change, and one at the
+and 5 on 0.3.1: three at hint changes, one at a figure's change, and one at the
 turn's end with the bar unchanged, which the fixed-text hook drew too.
+The recordings also contain bar-changing redraws with no split frame, so a plugin
+redraw does not invariably cause one.
 
 The context after an interrupted turn was measured on 2026-09-23 in the same kind of
-Haiku 4.5 sessions, with every read the mod made traced. When Esc interrupted a turn,
-`turn.complete` came with `isAborted` true and the engine answered `$.session.usage()` with
-the window and no token count, 41 ms after the read at the step's end had 37,105; its
-typings keep a missing count for a fresh or just-compacted window. In the same situation
-the engine's classic status line payload kept `total_input_tokens` at 37,191. 0.3.0 and
-0.3.1 drew the missing count as `0/200K` until the next response, in 6 of 6 interrupted
-runs (three each) and none of 6 finished ones. This build keeps the figure on the bar after an interrupted turn: the
-next interrupted run kept `37K/200K` until the next prompt, as did a run left to finish.
+Haiku 4.5 sessions, with every read the mod made traced. In recording U1, the engine
+answered `$.session.usage()` with the window and no token count, 41 ms after the read at
+the step's end had 37,105. That recording kept only the names of the turn-completion
+fields. Recording V1 separately captured `isAborted: true` and `reason: 'aborted'`,
+followed by a usage result with the window and no count. The typings describe a missing
+count as a fresh or just-compacted window. In two further classic-statusline runs,
+`W-shell-1` and `W-shell-2`, the last nonzero payloads reported 39,448 and 39,523 input
+tokens; the following payloads reported zero input tokens and zero percent used.
+The classic row showed `0/200K` after Esc and during the next request, then recovered
+after its response. The earlier payload-only recording ended with 37,191 input
+tokens; it did not establish continued retention or render the classic bar.
+Versions 0.3.0 and 0.3.1 drew the missing count as `0/200K` after interruption, in
+6 of 6 interrupted runs (three each) and none of 6 finished ones. Version 0.3.2 kept
+the figure during the interrupted turn's completion refresh: the next interrupted run
+kept `37K/200K`
+until the next prompt, as did a run left to finish. Later refreshes could still erase
+it: after Esc then a new prompt, a screen read showed `0/200K` before the response
+supplied a new figure. Version 0.3.3 retains the last reported count across those
+refreshes, as described above.
+
+Before store persistence was added, an earlier 0.3.3 candidate was checked on
+2026-09-23 in further Haiku 4.5 sessions on the same
+280 by 69 terminal. In the Esc-then-prompt run, the sampled screens showed `39K/200K`
+after the explicit interruption and while the next request was in flight, then
+`40K/200K` with its response. These are screen checkpoints, not a claim about every
+intermediate frame. With `pin_status` enabled at startup, the separate plain row was
+present before the first prompt, and both copies updated after the response. That
+run's startup gather finished before the hint draws; the kit covers the opposite
+order and an effort change drawn while a refresh is still gathering.
+In a separate Esc-then-`/compact` run, the bar retained `39K/200K` after Esc,
+showed `0/200K` after completed manual compaction, and showed `38K/200K` after the
+next response. The trace recorded `session.compact` before the command's refresh.
+An earlier attempt was canceled during compaction and is not evidence of a completed
+reset.
+
+An earlier 0.3.3 candidate, SHA256
+`0a51219eb4ebdff493928fa004aaa136fff036ef76736cab342080e201b247bc`,
+was checked on 2026-09-23 in two Haiku 4.5 sessions with separate scratch config
+directories. In the Esc-then-prompt run, the engine reported 32,510 tokens with the
+first response and 32,629 before omitting the count at the interrupted completion.
+The sampled screens kept `33K/200K` after Esc and during the next request; its
+response reported 33,176 tokens. The rounded labels alone do not establish which
+exact retained number was displayed.
+In the compaction run, `33K/200K` was visible before `/compact`; when the command
+hook returned, usage still reported 32,509 tokens. The recording shows `33K/200K`
+after the completed notice, then zero. At the subsequent interruption, two traced
+hint draws reported 31,233 tokens and the recording briefly showed `31K/200K`, then
+zero again. The sampled screen during the next request showed zero; its response
+reported 31,599 and the bar showed `32K/200K`. Both runs
+used that same hook hash, checked again afterwards. These checkpoints establish the
+sampled states, not every intermediate frame. Another candidate kept its cached
+`33K/200K` after installation even when the engine omitted the count. The current hook
+shares ordered usage across the hint, picker preview and pinned copy while waiting
+for a post-compaction response, so an older usage sample cannot replace a newer one.
+This orders the data used by each draw; it does not make the hint and preview redraw
+together. Either component can lag a draw of the other until its own next draw or a
+refresh, as described under Limits.
+
+Both scenarios were repeated on the revision-3 candidate, SHA-256
+`ad974275fdcb9ddb5428ef7c5c467a920e84c08e86c538c9c50875108557d659`, on 2026-09-23.
+After Esc, the sampled bar retained `33K/200K` while usage omitted its count, including
+at the next request; that response reported 33,071. The separate compaction run began
+with `33K/200K` on screen. The recording showed `33K/200K` just after `Compacted`, then
+zero. Around the subsequent interruption, the engine reported 31,263 and the recording
+briefly showed `31K/200K`, then zero again. The sampled next request showed zero and
+its response reported 31,607, displayed as `32K/200K`. These observations permit the
+engine's transient numeric reports; they do not establish continuous zero after
+compaction. Both runs used scratch configuration directories. Afterwards, the hook
+hash, owner's settings and all files in the owner's plugin-store tree matched their
+pre-run contents.
+
+The final revision-4 hook, SHA-256
+`82f11acd80aefd654681a7fd6619c4109b67ef09c84db86f7a16e24931715719`, was checked with
+both scenarios again that day. Esc and the next request showed `33K/200K` while the
+API omitted its count; the next response reported 33,105. The compaction run began
+at `33K/200K`. Its command-return trace still had the original transcript and 32,512
+tokens; the first trace with the installed summary omitted the count. The recording
+showed `Compacted`, a brief `33K/200K`, then zero. The subsequent interrupted request
+reported 31,314 and briefly drew `31K/200K`, followed by zero after Esc and during
+the next request. That response reported 31,747 and drew `32K/200K`. Both runs used
+scratch configuration directories; the hook hash was unchanged afterwards. The
+owner's settings and both statusline store contents matched the pre-run snapshots.
+The separate installed mod-settings store changed during that window, so the whole
+plugin-store comparison did not pass.
+
+The revision-5 hook, SHA-256
+`9f22d8e60e41dcd5f013ae4ef2fe9c4cee41adb2626ed92e4136a55a8d776fe2`, was checked with
+both scenarios on 2026-09-23 in scratch configuration directories. Esc and the next
+request retained `33K/200K` while usage omitted its count; the next response reported
+33,125 tokens. In the compaction run, the command-return trace still reported
+32,507 tokens before summary installation. After installation usage omitted its
+count. The interrupted request reported 31,308 transiently; after Esc and during
+the next request the sampled bar showed zero. The next response reported 31,746
+and displayed `32K/200K`. These samples do not establish continuous zero after
+compaction.
+
+Both message-picker Summarize options were also observed live that day. Each fired
+classic PreCompact and PostCompact with trigger `manual`, without `session.compact`,
+and retained the session id. PostCompact still read the original count; after the
+summary was installed usage omitted tokens. An ordinary subagent's completed
+automatic compaction emitted classic PostCompact without `agent_id` or `agent_type`,
+using the main session id and transcript path. The typed identity contract therefore
+did not supply a reliable main-only discriminator in this build; both Summarize
+options remain documented limits.
+
+Rewind was investigated on 2026-09-23 with a scratch observer. `/rewind` returned
+before picker selection; double Esc opened the picker without a `command.run` event.
+Canceling either picker preserved the transcript and count. Successful restoration
+removed the selected prompt, kept the same session ID and could leave usage without
+a token count. `/checkpoint` and `/undo` also opened the picker and reached the
+command hook as `rewind`. A prototype detected ordinary rewinds through the user-turn
+count, but that detector was excluded from 0.3.3 because it could miss a decrease
+after failed reads or on transcript rows the count omits. A numeric zero was not
+observed from this build's usage API; numeric-zero unit cases test a hypothetical input.
+
+On Claude Code 2.1.281, the revision-7 hook
+`9e09675895b566d36a653b7fc396f616a311e64b595a43274569047fd6ceaa1d`
+repeated both native runs on 2026-09-23. The Esc run showed `33K/200K` after the
+interruption and through the next request. In this run the engine continued to
+report 32,677 tokens at those checkpoints; the next response reported 33,006.
+This run therefore did not exercise an omitted count after Esc.
+
+The separate compact run still reported 32,558 tokens when `/compact` returned.
+After summary installation the engine omitted its count and the bar showed
+`0/200K`. The interrupted request then reported 31,408 tokens, and the sampled bar
+showed `31K/200K` after Esc and during the next request. The next response reported
+31,706 and displayed `32K/200K`. Reported numeric usage is displayed during the
+wait; these observations do not establish continuous zero after compaction.
+Both runs used scratch configuration directories. The hook hash, owner's
+`settings.json` and plugin-store contents matched their pre-run snapshots.
+
+The revision-8 hook, SHA-256
+`53e8e221417cf2f5cfb91d7280351d1463b4cd7695f1362f05015b47778588c6`, repeated both
+runs on 2.1.281 on 2026-09-24 in scratch configuration directories. The Esc run
+reported 32,689 tokens at the interrupted completion and showed `33K/200K` after
+Esc and during the next request. Its next response reported 33,000. This run did
+not exercise an omitted count after Esc.
+
+The separate compact run still reported 32,557 tokens when the command returned.
+After summary installation usage omitted its count and the sampled bar showed
+`0/200K`. The interrupted request then reported 31,302 tokens; after Esc and during
+the next request the sampled bar showed `31K/200K`. The next response reported
+31,597 and displayed `32K/200K`. These samples do not establish continuous zero
+after compaction. Both runs used the same hook hash, verified again afterwards.
+
+Separate Haiku traces recorded on 2026-09-24 compared ordinary Esc interruptions
+across the two builds, with six runs per build. On 2.1.280,
+`$.session.usage().context.tokens` was absent at the aborted turn's completion and
+the next request's first step in all six runs. On 2.1.281 it was present at both
+points in all six runs. Each run's terminal recording identifies its build; the
+2.1.280 runs used a cached binary. The revision-7 and revision-8 Esc runs above
+also observed a reported count on 2.1.281.
+
+The current hook, `53e8e221…`, was checked live on 2.1.281, not 2.1.280. The newest
+hook run live on 2.1.280 was `9f22d8e6…`, on 2026-09-23. The current hook's handling
+of omitted counts is checked by the kit, as described under Regression checks.
+Whether the 2.1.281 engine omits its count after a second interrupt, `/model`, a
+change to the `/config` model row, a subagent completion, a module reload or rewind
+has not been measured here. Rewind remains the documented retention limit.
+
+The 2.1.281 live compaction runs above show omitted counts after summary
+installation and the hint changing to zero. Those runs did not open the picker.
+In the kit, each component that draws during the wait uses zero for an omitted
+count or displays the reported count. The component that has not redrawn can still
+show its pre-compaction count until its own next draw or a refresh; see Limits.
+
+## Regression checks
+
+The declarations were regenerated with native `/plugin-types` on 2.1.281 and
+compared with the 2.1.280 export. The contracts used here for usage, session identity,
+start/end, compaction and classic compaction events, commands, rendering,
+invalidation and the store are unchanged. The new declarations also describe
+`PromptHint` and `AbovePrompt` on desktop; the live checks here cover the terminal.
+
+On 2.1.281, the current hook's kit tests retain an omitted count after an interrupt,
+`/model`, a change to the `/config` model row, a subagent completion and a second
+interrupt. A separate test loads a fresh module with a saved count to check the
+restoration used after reload. These tests establish how
+the mod handles supplied omitted counts, including the input observed after Esc
+on 2.1.280; they do not establish when the 2.1.281 engine supplies those inputs.
+
+Run the default kit and strict typecheck as described in the root README, including
+`tests/fixtures/*.ts` in the typecheck. The kit has no per-test plugin options. The
+pin and details-off cases are separate source fixtures, run against scratch copies
+of the shipped hooks with only the manifest defaults changed. From this directory:
+
+```sh
+check_dir=$(mktemp -d)
+mkdir -p "$check_dir/pinned/.claude-plugin" "$check_dir/pinned/tests"
+cp -R hooks "$check_dir/pinned/hooks"
+jq '.userConfig.pin_status.default = true' .claude-plugin/plugin.json > "$check_dir/pinned/.claude-plugin/plugin.json"
+cp tests/fixtures/options-world.ts "$check_dir/pinned/tests/"
+cp tests/fixtures/pinned.ts "$check_dir/pinned/tests/pinned.test.ts"
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test "$check_dir/pinned"
+
+mkdir -p "$check_dir/details-off/.claude-plugin" "$check_dir/details-off/tests"
+cp -R hooks "$check_dir/details-off/hooks"
+jq '.userConfig.details.default = false' .claude-plugin/plugin.json > "$check_dir/details-off/.claude-plugin/plugin.json"
+cp tests/fixtures/options-world.ts "$check_dir/details-off/tests/"
+cp tests/fixtures/details-off.ts "$check_dir/details-off/tests/details-off.test.ts"
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test "$check_dir/details-off"
+```
 
 ## Limits
 
+- While retention is suppressed (the post-compaction wait, or after a failed
+  initial context-store read), an engine-requested hint draw can show newer usage
+  while the open picker preview still shows the figures it last drew (including its
+  pre-compaction count if it has not drawn since compaction). The preview
+  catches up on its own next draw or a refresh. A hint-only draw does not itself
+  request a preview redraw.
+- The reverse also occurs while retention is suppressed: a picker-only draw can
+  show newer usage in the preview and, with `pin_status` enabled, the pinned copy,
+  while the hint line keeps the figures it last drew (including its pre-compaction
+  count if it has not drawn since compaction) until its own next draw or a refresh.
+  The band draw does not itself request a hint redraw.
 - Hover is applied by the terminal surface. No hook runs when the pointer moves, so
   the mod cannot observe or log a reveal, and the kit cannot test one; the kit tests
   check the tree (every segment names a scope, each scope has a card placed out of
@@ -215,17 +495,38 @@ next interrupted run kept `37K/200K` until the next prompt, as did a run left to
   id that is not `claude-*` is shown as it came.
 - The effort level is unknown until the first `turn.step`. The `/config` rows are
   read once in case one carries it; in each measured session none of the 43 rows did.
-- After `/compact` the context keeps the figure of the last response until the next
-  one arrives, because that is the figure the engine reports (measured on 2.1.280). The
-  types describe it as the status line's own `total_input_tokens`.
+- After `/compact` the engine can still report the previous response's count
+  (observed on 2.1.280), which a new hint or preview draw shows as reported. Once
+  compaction completes, a draw with no reported count uses zero instead of the
+  discarded remembered count. The other component can still display the count it
+  last drew (its pre-compaction count if it has not drawn since compaction) until
+  it draws or a refresh arrives, as above. The types
+  describe the count as the status line's own `total_input_tokens`.
+- Rewind does not reset the remembered context count in 0.3.3. The supplied API has
+  no rewind-completed event or public transcript revision, and the attempted
+  user-turn-count detector did not establish complete coverage. Canceling a picker
+  also leaves retention unchanged.
+- The message picker's **Summarize from here** and **Summarize up to here** do not
+  reset retention either; their classic compaction event lacks a verified main-only
+  identity signal in the observed build.
+- A compaction run while the plugin is disabled is missed. Re-enabling can restore
+  the saved pre-compaction count when usage omits its count, until a new response
+  supplies another count.
+- If the session-id read fails from module load, its saved context state takes
+  precedence when the id first returns. In kit probes, a saved 37K replaced the
+  52K shown during the failure once usage omitted its count. A saved compaction
+  marker also suppressed retention of a completed 21K response received before
+  identity recovered: the next interrupted request showed `0/200K` and the marker
+  remained saved. A subsequent response with verified identity can establish
+  retention again. This remains a limit in 0.3.3.
 - A switch made in the `/model` picker was not observed live, because the probe types
   one line and cannot pick an entry. If `command.run` resolves before the pick, the bar
   keeps the old model until the next model request redraws it.
 - `PROBE_RUN` in the environment makes `turn.complete` write a JSON timing dump, under
   `out/<PROBE_RUN>` unless `PROBE_OUT` names another directory. Both exist for
   measurement and are otherwise inert.
-- The picker draws in the band above the prompt, which Claude Code raises on the
-  terminal only, as it does the hint line the bar draws in.
+- The picker and hint line were verified on the terminal. The 2.1.281 declarations
+  also name desktop support for both sites; desktop behavior was not tested.
 - A plugin cannot give the band the keys (2.1.280 answers `that site does not hold the
   keyboard`), so the picker opens with the keys in the prompt: the digits work from
   there, the arrows and Enter after ctrl+x tab, as the picker's footer says.
@@ -238,14 +539,12 @@ next interrupted run kept `37K/200K` until the next prompt, as did a run left to
   segment is drawn under a new key; the focus landing on it was observed live.
 - The typings say a tree taller than the band scrolls and arms no digit. At 100
   columns the grid needs six rows, eight with the footer, and a shorter band scrolls it.
-- Each change of the engine's hint still shows the copy of the bar one row down for a
+- The recorded hint changes still showed the copy of the bar one row down for a
   frame: the first key typed into the empty prompt during a turn, sending a prompt, and
-  the turn's end. A hook cannot avoid it, since one drawing fixed text shows it too; only
-  Claude Code can. It is reported on the mods feedback thread,
+  the turn's end. A fixed-text hook reproduced it without requesting redraws. The
+  engine behavior is reported on the mods feedback thread,
   https://github.com/anthropics/claude-code/issues/91870#issuecomment-5790602695.
-- A change to a hover card's figures alone still asks for a redraw, so the cards stay
-  current, and costs that frame too.
-- After an interrupted turn the next request still shows `0/200K` until its response
-  arrives, since the engine has no count then either: the screen read 0.8 s after the prompt
-  was sent showed it, and the one 0.8 s later showed the new figure. A finished turn,
-  `/clear` and `/compact` show what the engine reports.
+- With details enabled, a change to a hover card's figures alone can request a redraw
+  to keep the card current, and expose that frame. With details disabled, refresh
+  deduplication compares the visible segments. Picker actions and the engine can
+  still cause draws; this is not a promise that every redraw changes a visible cell.
