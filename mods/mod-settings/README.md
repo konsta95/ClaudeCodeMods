@@ -39,7 +39,7 @@ This mod's `show_descriptions` setting controls author-provided help beneath eac
 
     CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir mods/mod-settings
 
-Run the kit from this directory with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test`. `tests/fixtures/guardmark` is a small provider plugin the pane tests load beside this mod (a hook that refuses a marked command, with two declared options and two presets); `benchmarks/no-trace` is an empty plugin kept for a baseline arm the kit does not run: its copy of the trace-cost test is parked as `tests/trace-cost.test.ts.txt`, so `claude plugin test` reports two files. Neither is meant to be installed.
+Run the kit from this directory with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test`. The pane tests define guardmark's admission, config rows and manifest inline and stub filesystem reads under `/fixture/guardmark/`; they do not load `tests/fixtures/guardmark`, the example provider plugin (a hook that refuses a marked command, with two declared options and two presets). `benchmarks/no-trace` is an empty plugin kept for a baseline arm the kit does not run: its copy of the trace-cost test is parked as `tests/trace-cost.test.ts.txt`, so `claude plugin test` reports two files. Neither example is meant to be installed.
 
 ## Authoring status
 
