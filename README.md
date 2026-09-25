@@ -7,7 +7,7 @@ listing all of them.
 
 | Mod | What it does | Verified |
 | --- | --- | --- |
-| [`statusline`](mods/statusline) | The [ClaudeCodeStatusline](https://github.com/konsta95/ClaudeCodeStatusline) bar as a function hook: drawn in the hint line under the prompt, where the shell version drew, from the session's own nouns; each segment reveals its details on hover, and `/statusline-mod` opens a picker in the band above the prompt that picks the segments, their order and the options. | 0.3.3: kit 97 of 97 plus 8 pinned-copy and 1 details-off fixture tests; strict typecheck clean on 2.1.281; live observations and their engine versions are recorded in its README |
+| [`statusline`](mods/statusline) | The [ClaudeCodeStatusline](https://github.com/konsta95/ClaudeCodeStatusline) bar as a function hook: drawn in the hint line under the prompt, where the shell version drew, from the session's own nouns; each segment reveals its details on hover, and `/statusline-mod` opens a picker in the band above the prompt that picks the segments, their order and the options. | 0.3.4: kit 127 of 127 plus 13 pinned-copy and 1 details-off fixture tests on 2.1.282; strict typechecks against 2.1.280, 2.1.281 and 2.1.282; live resume and previous-session selection before further input on 2.1.282, with earlier pin cleanup and branch checks, hook versions and limits recorded in its README |
 | [`hidevalues`](mods/hidevalues) | Hides high-entropy tokens and e-mail addresses in Bash tool rows until the pointer is over them. | kit 7 of 7, strict typecheck clean, hide and reveal observed live on 2.1.278; in the classic UI the hide draws and nothing reveals |
 | [`mod-settings`](mods/mod-settings) | `/mods`: a pane listing the mods' visible settings, with drafts, presets, reset and undo; in `/config` it labels the mods' rows `ClaudeCodeMods: <title>`. | kit 40 of 40, strict typecheck clean, Apply and Undo observed live on 2.1.278 in two probe sessions, the `/config` labels and the pane observed live on 2.1.280; open limits in its README |
 
@@ -20,8 +20,9 @@ listing all of them.
   `$.model.complete` began resolving a result object instead of a string, which broke
   the pane of `mod-settings` 0.2.0 once Explain was pressed. A later version may refuse
   or break a module.
-  Statusline 0.3.3 was subsequently checked with the kit, validation and regenerated
-  declarations on 2.1.281; its README records the separate live checks.
+  Statusline 0.3.4 was subsequently checked with the kit and validation on 2.1.282
+  and typechecked against 2.1.280, 2.1.281 and 2.1.282 declarations; its README records
+  the separate live checks.
 - Function hooks enabled: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the environment of
   the `claude` process. Without it no hooks module is loaded.
 - Hover needs the fullscreen terminal UI (`"tui": "fullscreen"` in `settings.json`)

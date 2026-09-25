@@ -1,6 +1,6 @@
 {
   "name": "statusline",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "ClaudeCodeStatusline as a function-hook mod: the status bar drawn in the hint line under the prompt, each segment revealing its details on hover, with /statusline-mod to pick the segments.",
   "author": { "name": "konsta95" },
   "userConfig": {

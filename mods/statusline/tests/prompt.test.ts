@@ -91,6 +91,7 @@ function world(on: On, over: Mocks = {}, store: Record<string, unknown> = {}, st
       return { value: undefined }
     },
     'ui.focus': () => ({}),
+    'ui.status': () => ({ value: undefined }),
     'ui.render': (_$: any, e: any) => ({ type: 'Box', props: {}, children: [{ type: 'Text', props: {}, children: ['ENGINE ' + e.component] }] }),
     'prompt.submit': (_$: any, e: any) => ({ text: e.text, origin: e.origin }),
     ...over,
@@ -140,6 +141,15 @@ test('the hint line draws the default segments from the session nouns', async ($
   expect(await ui.find({ type: 'Text', text: SESSION_ID })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: '$1.23' })).toBeDefined()
   expect(barText(walk(await ui.drawn()))).toBe('demo(feature/hover)Fable5.183K/1M5h 25%7d 62%' + SESSION_ID + '$1.23')
+})
+
+test('pin off clears a prior activation when every segment is off', async ($, on) => {
+  const statuses: Array<string | undefined> = []
+  const w = world(on, { 'ui.status': (_$: any, e: any) => { statuses.push(e.text); return { value: undefined } } }, { [PREFS]: { ids: [] } })
+  await $.ui.mount(MOUNT)
+  await start($)
+  await w.clock.settle()
+  expect(statuses).toEqual([undefined])
 })
 
 test('every segment names a hover scope that reveals its own card over the row above the bar', async ($, on) => {

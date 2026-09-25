@@ -20,6 +20,7 @@ function mockSession(on: any) {
   on('session.model', () => ({ value: 'Fable 5.1' }))
   on('session.id', () => ({ value: '4e1f0c9a-7b2d-4c58-9a36-d1e8f5b2c703' }))
   on('session.usage', () => { usageReads++; return { value: USAGE } })
+  on('ui.status', () => ({ value: undefined }))
   on('fs.read', (_$: any, e: any) => {
     if (e.path === '/work/demo/.git/HEAD') return { value: 'ref: refs/heads/feature/hover\n' }
     throw new Error('ENOENT: ' + e.path)

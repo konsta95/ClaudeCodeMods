@@ -1,6 +1,104 @@
 import { expect, test } from 'claude-code/testing'
 import { MOUNT, USAGE, start, step, world } from './options-world'
 
+for (const path of ['menu', 'command'] as const) {
+  test('both rows recover a mixed resume read through ' + path, async ($, on) => {
+    let id = 'session-options'
+    let tokens: number | undefined = 37000
+    let w: ReturnType<typeof world>
+    const resume = async () => {
+      await $.session.end({ reason: 'resume', sessionId: id, resume: { id } })
+      await $.classic.SessionStart({ source: 'resume', session_id: 'target' })
+      id = 'target'
+    }
+    w = world(on, {
+      'session.id': () => ({ value: id }),
+      'session.usage': () => ({ value: { ...USAGE, context: { tokens, window: 200000 } } }),
+      'session.end': (_$: any, e: any) => ({ sessionId: e.sessionId }),
+      'classic.SessionStart': () => ({}),
+      'command.run': async () => {
+        await resume()
+        await w.clock.sleep(100)
+        tokens = 52000
+        return {}
+      },
+    })
+    await start($)
+    const line = await $.ui.mount(MOUNT)
+    if (path === 'command') {
+      const run = $.command.run({ command: 'resume', args: 'target', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 140 } })
+      await w.clock.advance(100)
+      await run
+    } else {
+      await resume()
+      tokens = undefined
+      await w.clock.advance(100)
+      tokens = 52000
+    }
+    await w.clock.advance(100)
+    expect(await line.find({ type: 'Text', text: 'target' })).toBeDefined()
+    expect(await line.find({ type: 'Text', text: '52K/200K' })).toBeDefined()
+    expect(w.statuses.at(-1)).toContain('target')
+    expect(w.statuses.at(-1)).toContain('52K/200K')
+    tokens = undefined
+    await step($)
+    await w.clock.settle()
+    expect(await line.find({ type: 'Text', text: '52K/200K' })).toBeDefined()
+    expect(w.statuses.at(-1)).toContain('52K/200K')
+  })
+}
+
+for (const path of ['branch', 'rewind-previous']) {
+  test('the pinned copy refreshes after ' + path, async ($, on) => {
+    let id = 'session-options'
+    let tokens = 37000
+    const w = world(on, {
+      'session.id': () => ({ value: id }),
+      'session.usage': () => ({ value: { ...USAGE, context: { tokens, window: 200000 } } }),
+      'session.end': (_$: any, e: any) => ({ sessionId: e.sessionId }),
+      'classic.SessionStart': () => ({}),
+      'command.run': async () => {
+        if (path === 'branch') {
+          await $.session.end({ reason: 'resume', sessionId: id, resume: { id } })
+          id = 'branch-target'
+          tokens = 52000
+        }
+        return {}
+      },
+    })
+    await start($)
+    await $.ui.mount(MOUNT)
+    await $.command.run({ command: path === 'branch' ? 'branch' : 'rewind', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 140 } })
+    if (path === 'rewind-previous') {
+      await $.session.end({ reason: 'resume', sessionId: id, resume: { id } })
+      await $.classic.SessionStart({ source: 'resume', session_id: 'previous-session' })
+      id = 'previous-session'
+      tokens = 52000
+      await w.clock.advance(100)
+    }
+    await w.clock.settle()
+    expect(w.statuses.at(-1)).toContain(id)
+    expect(w.statuses.at(-1)).toContain('52K/200K')
+  })
+}
+
+test('turning every segment off clears the pin instead of leaving an empty status row', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.ui.mount(MOUNT)
+  await $.command.run({ command: 'statusline-mod', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 140 } })
+  const band = await $.ui.mount({
+    plugin: 'statusline', surface: 'terminal', component: 'AbovePrompt', requestId: 'band',
+    props: { hasSurvey: false, isWorking: false, maxRows: 29, bodyColumns: 140, scroll: { offset: 0, bodyRows: 29 }, view: {} },
+  })
+  for (const id of ['git-branch', 'model', 'context', 'five-hour-limit', 'weekly-limit', 'session', 'cost']) {
+    await band.press({ key: 'segment:' + id })
+    await w.clock.settle()
+  }
+  expect(w.statuses.at(-1)).toBeUndefined()
+  expect(w.statuses.includes('')).toBe(false)
+})
+
 for (const component of ['preview', 'hint'] as const) {
 test(`a delayed ${component} cannot pin a segment that was turned off while usage was pending`, async ($, on) => {
   let hold = false, removing = false

@@ -33,7 +33,8 @@ Code draws its own pills, such as the permission mode, to the left of the bar.
 
 A segment whose noun failed is drawn dim as `<id>!` with the error in its detail; a
 segment with nothing to show yet (no cost, no rate-limit window) is left out. With
-every segment off, the hint line is passed through unchanged.
+every segment off, the hint line is passed through unchanged and the pinned copy
+is cleared. Turning `pin_status` off also clears a copy left by the prior activation.
 
 With `details` on, hovering a segment shows its detail on a one-row card over the row
 above the bar, which in the fullscreen UI is the prompt box's bottom rule, starting at
@@ -42,7 +43,8 @@ nothing on screen.
 
 The bar is rebuilt after `session.start`, as every model request of the main loop
 goes out (`turn.step`, while the request is in flight, so the request waits for
-nothing), after every `turn.complete`, after `/model`, `/compact` and `/clear` return,
+nothing), after every `turn.complete`, after `/model`, `/compact`, `/clear`, and
+after a command-triggered resume passes the identity and retry-window checks below,
 after a completed main-session compaction, and after the model row of `/config` is
 written. While retention is suppressed, hint and open-picker draws read usage again:
 this includes the post-compaction wait and uncertainty after a failed initial
@@ -83,8 +85,8 @@ do not reset the main bar. The built-in `/clear` and a change of session also di
 the remembered count. A plugin that answers `/clear` without running the built-in
 command leaves retention intact.
 
-Rewind is a known limit in 0.3.3: the remembered count survives both slash-command
-and double-Esc rewind. If the engine omits its count after restoring the conversation,
+Rewinding messages within the current session remains a known limit in 0.3.4: the
+remembered count survives both slash-command and double-Esc rewind. If the engine omits its count after restoring the conversation,
 the bar can therefore show the count from before rewind. Rewind reset is deferred
 until a supported signal or a verified detector covers every required case.
 The message picker's **Summarize from here** and **Summarize up to here** also leave
@@ -103,6 +105,32 @@ whether it holds a compaction marker. It shows reported usage without rememberin
 it until a later successful read or a new response establishes retention. During
 that uncertainty, an omitted count can therefore display as zero.
 
+Binary inspection of Claude Code 2.1.282's resume body shows the destination id
+switching before transcript replacement, with awaited work between them.
+Pending-resume reads wait while a command is running. When a command raised a
+resume end and that resume is still pending, its return checks the destination id.
+If the identity checks pass, it rebuilds the bar and can finish the resume only after
+a fresh read reports a count for the destination; an omitted count or usage error
+keeps it pending. An early command return cannot rearm the ended session while a
+different destination is still unbound.
+
+A pending resume checks every 100 ms for up to five seconds after the end hook's
+cleanup wait, so a later menu selection can refresh without another keystroke.
+Menu resumes continue retrying through that interval even after reading a new id
+and numeric count. The expiry bounds retries; it does not prove that the transcript
+is ready. Expiry ends the pending resume entirely: subsequent cached hint and band
+draws do not retry it. A transcript swap outside that interval waits for the next
+ordinary refresh, such as a model request. Another session end or start also ends
+the pending resume. The render hooks match only those two components,
+so bar invalidations do not redraw transcript or tool rows through this mod.
+
+This covers the observed `/resume`, `/branch` and rewind menu's **resume previous
+session** paths. A resume can end and continue the same id without `session.start`;
+its completed command rearms context retention for that id only when a classic
+start names that id or `/resume` receives exactly that id as its argument. No new model request is
+needed for the refreshed bar. This previous-session action is separate from rewinding
+messages within the current session, whose retention limit is described above.
+
 If saving a compaction marker fails, the mod tries to delete the obsolete saved
 count and retries the marker on later refreshes. Deletion alone cannot preserve the
 waiting state across reload: without a saved marker, a reload can learn a lingering
@@ -114,7 +142,7 @@ writes, and limits its wait for cleanup to part of the remaining shared end budg
 The supplied 2.1.280 contract fires that hook on exit, `/clear`, resume, logout, a signal
 and the end of a `-p` run, with a default overall cleanup deadline of 1.5 seconds. If
 no end event runs, cleanup is interrupted or outlasts the wait, or deletion fails,
-the key can remain in the shared plugin store. This mod has no background collection
+that key can remain in the shared plugin store. This mod has no background collection
 of abandoned session keys.
 
 ## /statusline-mod
@@ -421,12 +449,17 @@ points in all six runs. Each run's terminal recording identifies its build; the
 2.1.280 runs used a cached binary. The revision-7 and revision-8 Esc runs above
 also observed a reported count on 2.1.281.
 
-The current hook, `53e8e221…`, was checked live on 2.1.281, not 2.1.280. The newest
-hook run live on 2.1.280 was `9f22d8e6…`, on 2026-09-23. The current hook's handling
-of omitted counts is checked by the kit, as described under Regression checks.
-Whether the 2.1.281 engine omits its count after a second interrupt, `/model`, a
-change to the `/config` model row, a subagent completion, a module reload or rewind
-has not been measured here. Rewind remains the documented retention limit.
+The 0.3.3 hook, `53e8e221…`, was checked live on 2.1.281, not 2.1.280. The newest
+hook run live on 2.1.280 was `9f22d8e6…`, on 2026-09-23. Handling of omitted counts
+is checked by the kit, as described under Regression checks.
+Separate engine-only Haiku checks on 2026-09-24 sampled a second interrupt,
+`/model haiku`, `/config model=haiku`, a subagent completion, module reload and
+conversation rewind after an interruption. Each path had three completed 2.1.281
+runs; all sampled post-seed reads carried a count. One 2.1.280 control per path
+omitted counts after the interruption; rewind restored a count, while the other
+paths kept omitting it until a new main response. Cold startup omitted counts on
+both builds. These checks loaded only the observer, not statusline, and do not
+establish every model or history. Rewind remains the documented retention limit.
 
 The 2.1.281 live compaction runs above show omitted counts after summary
 installation and the hint changing to zero. Those runs did not open the picker.
@@ -434,20 +467,127 @@ In the kit, each component that draws during the wait uses zero for an omitted
 count or displays the reported count. The component that has not redrawn can still
 show its pre-compaction count until its own next draw or a refresh; see Limits.
 
+### 0.3.4 pin cleanup and resume
+
+On 2026-09-24, scratch Haiku sessions on 2.1.281 compared the 0.3.3 hook
+`53e8e221417cf2f5cfb91d7280351d1463b4cd7695f1362f05015b47778588c6`
+with the first 0.3.4 candidate
+`21fa1baf37792f97f8b2b5536c5c487c103a5f2d10b173143d59c31d5c413f53`.
+With 0.3.3, disabling `pin_status` through `/config` reloaded the module but left
+the previous pinned row visible. Disabling every segment pinned an empty string,
+leaving a visible `⚠ statusline:` row. With that candidate, both actions called
+`ui.status(undefined)` and removed the row.
+
+Direct `/resume`, same-id `/resume`, and the resume picker emitted `session.end`
+without another `session.start`. The 0.3.3 bar continued naming the ended session.
+The first candidate's direct and same-id resumes showed the resumed id and `7K/200K` before
+another model request; the engine reported 6,843 tokens. Picker resume also
+refreshed the selected session before a request. These live checks cover 2.1.281;
+0.3.4 was not run live on 2.1.280.
+
+The round-2 hook is
+`356b736f8b96e074997b05b02e1eabb282b5589a72e5fb92c2757dcdc9d4f6cf`.
+Before that change, two scratch Haiku sessions on 2.1.281 observed `/branch` and
+the rewind menu's **resume previous session** emit `session.end` with reason
+`resume`. The first candidate kept the ended session's id and `0/200K` while
+the engine reported 6,705 tokens for the destination. The rewind command returned
+before selection. Its classic SessionStart event named the destination before
+the session-id noun had switched, so that event alone was too early to refresh.
+
+With the round-2 hook, a scratch 2.1.281 Haiku session showed the destination id
+and `7K/200K` in both rows after `/branch`, same-id `/resume` and cross-id `/resume`.
+The sampled engine count was 6,777. Previous-session selection still left both rows
+on the ended id and `0/200K` until another keystroke. The earlier reported successful
+screen for that path was captured after typing a sample command.
+
+The round-3 hook is
+`4e579ec267ede514bd780615eba6d881b3db2a27fefa09b77c56d06cbc69e9c8`.
+In a scratch 2.1.281 Haiku session, the screen captured after previous-session
+selection and before any further input showed the destination and `7K/200K` in both
+rows. The trace recorded the destination's pinned update 172 ms after Enter; this
+is one observed interval, not a latency guarantee. The engine reported 6,774 tokens.
+Branch, same-id resume and cross-id resume also showed their destinations before
+further input, and pin-off with selected segments removed the pinned row.
+The all-segments-off and resume-picker live checks above used the first candidate;
+the round-3 hook covered pin cleanup in the kit. The round-3 hook was not run live
+on 2.1.280.
+
+The round-4 hook is
+`bece985a0b592b6964fcdf35f3b0dff898dd35f83dfe36066434de044659d960`.
+It was checked on 2.1.282 after the installed engine updated during the round.
+In a scratch Haiku session, `/resume` from a cleared session and the rewind menu's
+**resume previous session** each showed the destination and `7K/200K` in both rows
+before any further keystroke. The engine reported 7,312 tokens. These captures
+show the completed transitions; the mock-clock cases below deliberately place
+reads between the id change and transcript replacement. The live frequency of
+that mixed-read window remains unmeasured.
+
+The round-5 hook is
+`1c1af6377165e6d240049e6c549d573ad0759dbafcba4467d86a98e217bfb570`.
+On 2026-09-25, a scratch Haiku session on 2.1.282 again showed the destination and
+`7K/200K` in both rows before further input after direct resume and previous-session
+menu selection. The destination reported 6,779 tokens. A further menu selection
+started from a session reporting 6,816 tokens and returned to that destination:
+the menu path is reachable from a counted session. These live captures establish
+the completed transitions; the wrong intermediate count/store write remains kit
+evidence, as described under Limits.
+
+Effort behavior is unchanged from 0.3.3. The Haiku checks supplied no
+`turn.step.effort`; the `--effort high` launch used the 0.3.3 hook `53e8e221…`.
+Those sessions do not establish effort behavior on an effort-capable model.
+
 ## Regression checks
 
-The declarations were regenerated with native `/plugin-types` on 2.1.281 and
-compared with the 2.1.280 export. The contracts used here for usage, session identity,
-start/end, compaction and classic compaction events, commands, rendering,
-invalidation and the store are unchanged. The new declarations also describe
-`PromptHint` and `AbovePrompt` on desktop; the live checks here cover the terminal.
+Version 0.3.4 passes 127 default kit tests, thirteen pinned-copy fixtures and one
+details-off fixture on 2.1.282, plus validation and strict typechecks against
+the 2.1.280, 2.1.281 and 2.1.282 declarations. The 97 unchanged default tests from 0.3.3
+also pass against this hook on 2.1.282. In the earlier 2.1.281 checks,
+the selected-segment pin-off, direct resume and
+same-id retention cases fail on the 0.3.3 hook. The branch cases for hint and pin
+also fail on the first 0.3.4 candidate. Previous-session hint and pin cases now
+inject no render after binding; both fail on the round-2 hook and pass here.
+A bar-change case redraws none of its 30 transcript rows across three requests;
+it fails on round 2, which redraws them 90 times. A defensive case for a command
+returning before its destination binds fails on round 2 and passes here; that
+ordering was not observed live. Mock-clock checks on 2.1.282 cover polling expiry,
+idle behavior, and menu retries after a numeric count. After clear/other ends,
+the checks assert no further session-id reads; those cases alone do not establish
+that a timer was running before that end. Three
+compatibility cases for effort across clear, same-id resume and cross-id resume
+pass on 0.3.3, fail on the first candidate and pass on this hook. They preserve
+0.3.3 behavior; they do not establish the engine's effort setting. Tests use the
+kit clock rather than waiting on real timers.
 
-On 2.1.281, the current hook's kit tests retain an omitted count after an interrupt,
+On 2.1.282, the shipped W1, W2 and W2b mixed-read cases fail on the round-3 hook
+and pass on round 4: menu usage arrives after the first destination-id tick;
+command usage arrives after a tick inside the command; and the destination store
+receives the post-command count. The numeric-old-count menu case also fails on
+round 3 and passes here. Atomic-switch, transcript-before-tick, and late-binding
+controls pass on both. Missing/error count cases keep retrying after command
+completion, a reported zero can finish the resume, and expiry bounds polling even
+if no destination count arrives. The pinned fixtures check both rows and retention
+through the next omitted count for menu and command transitions.
+
+Round 5 adds cached hint and band checks at expiry for menu and command resumes,
+with reported and omitted destination counts. On 2.1.282, the menu cases and the
+command-without-count case fail on the round-4 hook and pass on round 5: later
+cached draws make no usage or id reads. The next model request still refreshes
+normally. The independent Owner and review read-count probes agree. The menu
+misattribution probes B/B2 remain failing evidence for the limit below; they are
+not counted as passing regressions. The late-swap probe C remains the accepted
+limit of the retry window.
+
+The declarations were exported with native `/plugin-types` on each named version;
+the 2.1.282 export was regenerated during this round. All three exports are strict
+typecheck inputs. The declarations describe `PromptHint` and `AbovePrompt` on desktop;
+the live checks here cover the terminal.
+
+On 2.1.282, the current hook's kit tests retain an omitted count after an interrupt,
 `/model`, a change to the `/config` model row, a subagent completion and a second
 interrupt. A separate test loads a fresh module with a saved count to check the
 restoration used after reload. These tests establish how
 the mod handles supplied omitted counts, including the input observed after Esc
-on 2.1.280; they do not establish when the 2.1.281 engine supplies those inputs.
+on 2.1.280; they do not establish when the engine supplies those inputs.
 
 Run the default kit and strict typecheck as described in the root README, including
 `tests/fixtures/*.ts` in the typecheck. The kit has no per-test plugin options. The
@@ -473,6 +613,25 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test "$check_dir/details-off"
 
 ## Limits
 
+- Every pending-resume retry, including one triggered by a draw, ends at the
+  five-second expiry after end-hook cleanup. If transcript installation takes
+  longer, the bar keeps its last sampled count until an ordinary refresh. Cached
+  hint and band draws do not restart the retry window.
+- A menu resume can expose and save the ended session's count under the destination
+  id if a read lands between the id switch and transcript replacement. If the
+  destination subsequently omits its count, that remembered value can persist.
+  The kit reproduces both the retained wrong count and an early wrong store write
+  later corrected by a reported destination count. An id and numeric count do not
+  establish transcript identity: the destination can legitimately have the same
+  count. No supported transcript-ready discriminator has been verified for this
+  path, and this limit has not been proved unavoidable. The host refused an
+  attempted message-list diagnostic because the production hook does not call
+  that API; reading the transcript file was not tried. The 2.1.282 live check
+  above confirms that previous-session selection can start with a reported count.
+  The classic start notice precedes replacement in the inspected 2.1.282
+  binary. Its optional context total includes output tokens, unlike the usage
+  count displayed here, so it is not an interchangeable destination count. The
+  live frequency of the mixed read is unknown.
 - While retention is suppressed (the post-compaction wait, or after a failed
   initial context-store read), an engine-requested hint draw can show newer usage
   while the open picker preview still shows the figures it last drew (including its
@@ -493,8 +652,12 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test "$check_dir/details-off"
   edge of the terminal is cut off there.
 - The mods API gives the model id only; the display name is derived from it, and an
   id that is not `claude-*` is shown as it came.
-- The effort level is unknown until the first `turn.step`. The `/config` rows are
-  read once in case one carries it; in each measured session none of the 43 rows did.
+- Effort retains the 0.3.3 behavior: a learned level stays in module memory across
+  `/clear` and `/resume`, and a request that omits effort leaves that level intact.
+  A module reload loses it; it stays unknown until a main `turn.step` supplies a
+  level or a configuration row seeds one. There is no saved effort level in the
+  plugin store. The recorded 2.1.281 Haiku configuration dumps contained no effort
+  row; this observation does not cover other models.
 - After `/compact` the engine can still report the previous response's count
   (observed on 2.1.280), which a new hint or preview draw shows as reported. Once
   compaction completes, a draw with no reported count uses zero instead of the
@@ -502,7 +665,7 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test "$check_dir/details-off"
   last drew (its pre-compaction count if it has not drawn since compaction) until
   it draws or a refresh arrives, as above. The types
   describe the count as the status line's own `total_input_tokens`.
-- Rewind does not reset the remembered context count in 0.3.3. The supplied API has
+- Rewinding messages within the current session does not reset the remembered context count in 0.3.4. The supplied API has
   no rewind-completed event or public transcript revision, and the attempted
   user-turn-count detector did not establish complete coverage. Canceling a picker
   also leaves retention unchanged.
@@ -518,7 +681,7 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test "$check_dir/details-off"
   marker also suppressed retention of a completed 21K response received before
   identity recovered: the next interrupted request showed `0/200K` and the marker
   remained saved. A subsequent response with verified identity can establish
-  retention again. This remains a limit in 0.3.3.
+  retention again. This remains a limit in 0.3.4.
 - A switch made in the `/model` picker was not observed live, because the probe types
   one line and cannot pick an entry. If `command.run` resolves before the pick, the bar
   keeps the old model until the next model request redraws it.

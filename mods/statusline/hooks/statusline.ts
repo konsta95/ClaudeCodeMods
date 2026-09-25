@@ -1,4 +1,4 @@
-import type { EngineInterface, On, PluginOptions, RenderChildren } from 'claude-code'
+import type { EngineInterface, On, PluginOptions, RenderChildren, Timer } from 'claude-code'
 
 // ClaudeCodeStatusline as a function-hook mod. The classic statusLine command reads a
 // JSON payload on stdin and prints one painted line under the prompt; here the same
@@ -619,6 +619,10 @@ let contextWrites: Promise<void> = Promise.resolve()
 let contextResetPending = false
 let contextSuppressed = false
 let endedSession: string | undefined
+let resumeEnds = 0
+let commandsRunning = 0
+type PendingResume = { from: string; target?: string; commandDone?: true; reading?: Promise<void>; poll?: Timer; expiry?: Timer }
+let pendingResume: PendingResume | undefined
 let contextEpoch = 0
 let usageReadsBegun = 0
 let displayUsage: { read: UsageRead; epoch: number; session: string | undefined; ticket: number } | undefined
@@ -750,7 +754,7 @@ function contextResponseArrived($: EngineInterface): void {
   if (contextSession) contextWrites = writeContext($, contextWrites, contextSession)
 }
 
-async function gatherLatest($: EngineInterface, src: string): Promise<void> {
+async function gatherLatest($: EngineInterface, src: string): Promise<string | undefined> {
   const ticket = ++refreshesBegun
   const fresh = await gather($, src)
   if (ticket < refreshShown) return
@@ -765,7 +769,10 @@ async function gatherLatest($: EngineInterface, src: string): Promise<void> {
   if (restored?.failed) { contextRead = undefined; contextReadSession = undefined }
   refreshShown = ticket
   fresh.effort = effort
+  const countedSession = !fresh.errors.session && !fresh.errors.context && Number.isFinite(fresh.context?.tokens)
+    ? fresh.session : undefined
   snap = retainContext($, fresh, restored, true)
+  return countedSession
 }
 
 async function refresh($: EngineInterface, src: string): Promise<void> {
@@ -819,6 +826,7 @@ let hintRequestedKey: string | undefined
 let previewDrawnKey: string | undefined
 let previewRequestedKey: string | undefined
 let pinnedText: string | undefined
+let pinSent = false
 function drawingKey(segs: Seg[], details = cfg.details): string {
   return JSON.stringify(details ? segs : segs.map(({ detail, ...visible }) => visible))
 }
@@ -826,11 +834,11 @@ function drawingKey(segs: Seg[], details = cfg.details): string {
 // The pin must use current selections and accepted usage, regardless of which draw
 // or refresh finishes first (owner decisions 66abb5e1db3e and 8043462344bd).
 function pin($: EngineInterface, segs: Seg[]): void {
-  if (!cfg.pinStatus) return
-  const text = plainBar(segs)
-  if (text === pinnedText) return
+  const text = cfg.pinStatus ? plainBar(segs) || undefined : undefined
+  if (pinSent && text === pinnedText) return
   $.ui.status(text)
   pinnedText = text
+  pinSent = true
 }
 
 async function redraw($: EngineInterface): Promise<void> {
@@ -856,6 +864,50 @@ function refreshQuietly($: EngineInterface, src: string, usageOnly = false): Pro
   })
 }
 
+function stopResumePolling(pending: PendingResume | undefined): void {
+  pending?.poll?.cancel()
+  pending?.expiry?.cancel()
+  if (pending) { pending.poll = undefined; pending.expiry = undefined }
+}
+
+function finishResume(pending: PendingResume | undefined): void {
+  stopResumePolling(pending)
+  if (pendingResume === pending) pendingResume = undefined
+}
+
+// The expiry bounds every resume retry, including draw-time retries. A later
+// ordinary refresh recovers a swap outside the bound (owner decision 0decce430ab8).
+function pollResume($: EngineInterface, pending: PendingResume): void {
+  pending.poll = $.clock.every(100, () => { void refreshResumed($) })
+  pending.expiry = $.clock.after(5000, () => { finishResume(pending) })
+}
+
+// A changed id does not prove the transcript is installed. Command resumes wait
+// for command completion and a reported count; menu resumes use the retry bound
+// rather than claiming readiness (owner decision 8bd32e8f454a).
+async function refreshResumed($: EngineInterface): Promise<void> {
+  const pending = pendingResume
+  if (!pending || commandsRunning) return
+  if (!pending.reading) {
+    pending.reading = (async () => {
+      try {
+        const id = await $.session.id()
+        if (pendingResume !== pending || !id || (pending.target && id !== pending.target)) return
+        if (id === pending.from && !(pending.commandDone && pending.target === id)) return
+        endedSession = undefined
+        const commandDone = pending.commandDone
+        const countedSession = await gatherLatest($, 'session.resume')
+        await redraw($)
+        if (pendingResume === pending && commandDone && countedSession === id && snap?.session === id && !snap.errors.session) finishResume(pending)
+      } catch (err) {
+        timing.refresh_error = 'session.resume: ' + errorText(err)
+      }
+    })()
+  }
+  await pending.reading
+  pending.reading = undefined
+}
+
 // Picker presses run one after another; a failure becomes a toast, never a lost picker.
 let actions: Promise<unknown> = Promise.resolve()
 function act($: EngineInterface, operation: () => Promise<unknown>): void {
@@ -879,6 +931,7 @@ export function register(on: On, options: PluginOptions) {
   cfg = readOptions(options)
 
   on('session.start', async ($, e, next) => {
+    finishResume(pendingResume)
     timing.started_at = now()
     interactive = e.isInteractive === true
     const started = await next(e)
@@ -893,6 +946,10 @@ export function register(on: On, options: PluginOptions) {
 
   on('session.end', async ($, e, next) => {
     endedSession = e.sessionId
+    finishResume(pendingResume)
+    const pending = e.reason === 'resume' ? { from: e.sessionId } : undefined
+    pendingResume = pending
+    if (e.reason === 'resume') resumeEnds++
     forgetContext($)
     // A later compaction belongs to the next active conversation, even before its
     // id is available; the ended session must stay retired (changes-7 brief).
@@ -910,6 +967,7 @@ export function register(on: On, options: PluginOptions) {
       $.clock.sleep(Math.max(0, remaining / 2), { signal: next.signal }).then(() => false, () => false),
     ])
     if (!completed) timing.context_store_error = 'end: cleanup did not finish within the remaining wait budget'
+    if (pending && pendingResume === pending) pollResume($, pending)
     return result
   })
 
@@ -986,6 +1044,28 @@ export function register(on: On, options: PluginOptions) {
     })
   }
 
+  on('command.run', async ($, e, next) => {
+    const beforeResume = resumeEnds
+    commandsRunning++
+    let result
+    try { result = await next(e) }
+    finally { commandsRunning-- }
+    const pending = pendingResume
+    if (resumeEnds !== beforeResume && pending) {
+      pending.commandDone = true
+      if (!pending.target && e.command === 'resume' && e.args.trim() === pending.from) pending.target = pending.from
+      await refreshResumed($)
+    }
+    return result
+  })
+
+  on('classic.SessionStart', async ($, e, next) => {
+    const pending = pendingResume
+    const result = await next(e)
+    if (pending && pendingResume === pending && e.agent_id === undefined && (e.source === 'resume' || e.source === 'fork')) pending.target = e.session_id
+    return result
+  })
+
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined) {
@@ -1006,8 +1086,10 @@ export function register(on: On, options: PluginOptions) {
   // the bar from under the pointer (measured on 2.1.280), so details are cards out of
   // the flow, over the row above.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    await refreshResumed($)
     const loadedPrefs = await loadPrefs($)
     if (!loadedPrefs.ids.length) {
+      pin($, [])
       hintDrawnKey = drawingKey([])
       hintRequestedKey = undefined
       return next(e)
@@ -1109,6 +1191,7 @@ export function register(on: On, options: PluginOptions) {
   // taller than the band scrolls and arms no digit, so a short band gets a grid, and the
   // footer while it fits.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    await refreshResumed($)
     const previous = bandDraw
     let finished = () => {}
     bandDraw = new Promise<void>((resolve) => {
